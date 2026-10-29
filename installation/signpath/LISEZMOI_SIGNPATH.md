@@ -20,13 +20,9 @@ signé ait été téléchargé assez souvent.
 1. Activer l'authentification à deux facteurs sur le compte GitHub (et plus tard sur
    SignPath) : SignPath l'exige de chaque membre de l'équipe.
 2. Vérifier que le workflow « Windows » réussit (onglet Actions du dépôt).
-3. Publier la version 2.0 : créer l'étiquette `v2.0` sur la branche `main`. Le workflow
-   construit l'installateur et le publie dans une Release, encore sans signature.
-
-   ```
-   git tag v2.0
-   git push origin v2.0
-   ```
+3. Publier la version 2.0 : onglet Releases du dépôt, « Draft a new release », nouvelle
+   étiquette `v2.0` sur la branche `main`, puis « Publish release ». Le workflow construit
+   l'installateur et le joint à la Release, encore sans signature.
 
 ## 2. La demande
 
@@ -84,5 +80,5 @@ signature par la phrase demandée par SignPath :
 > Free code signing provided by [SignPath.io](https://signpath.io), certificate by
 > [SignPath Foundation](https://signpath.org)
 
-puis publier une nouvelle version (par exemple l'étiquette `v2.0.1`, après avoir mis le
+puis publier une nouvelle Release (par exemple l'étiquette `v2.0.1`, après avoir mis le
 même numéro dans `interface.py` et `installation/installateur.iss`).

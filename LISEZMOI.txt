@@ -122,9 +122,11 @@ Construction automatique sur GitHub
     programme et l'installateur à chaque envoi sur la branche main, sur les
     machines de GitHub (workflow .github\workflows\windows.yml). L'installateur
     se télécharge dans l'onglet Actions (artefact « installateur »).
-  - Une étiquette vX.Y (par exemple v2.0) publie l'installateur dans une
-    Release. Elle doit porter le même numéro que VERSION (interface.py) et
-    Version (installation\installateur.iss), sinon la construction s'arrête.
+  - Publier une version : sur GitHub, onglet Releases, « Draft a new release »,
+    nouvelle étiquette vX.Y (par exemple v2.0) sur la branche main, puis
+    « Publish release ». Le workflow construit l'installateur et le joint à la
+    Release. L'étiquette doit porter le même numéro que VERSION (interface.py)
+    et Version (installation\installateur.iss), sinon la construction s'arrête.
   - Signature : la SignPath Foundation signe gratuitement les logiciels libres
     construits ainsi. La demande et la mise en place sont décrites dans
     installation\signpath\LISEZMOI_SIGNPATH.md. Tant que les variables

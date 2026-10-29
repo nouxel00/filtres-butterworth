@@ -57,8 +57,8 @@ python main.py
   récent et [Inno Setup 6](https://jrsoftware.org/isdl.php)). Résultat dans `dist\`.
 - **Automatiquement** : le workflow GitHub Actions [Windows](.github/workflows/windows.yml)
   construit le programme (PyInstaller) et l'installateur (Inno Setup) à chaque envoi sur
-  `main`, sur les machines de GitHub. Une étiquette `vX.Y` publie l'installateur dans une
-  Release.
+  `main`, sur les machines de GitHub. Quand une Release est publiée (étiquette `vX.Y`),
+  il y joint l'installateur.
 
 Détails dans `LISEZMOI.txt`, partie 3.
 
