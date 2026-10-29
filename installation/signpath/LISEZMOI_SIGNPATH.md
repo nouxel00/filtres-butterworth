@@ -81,4 +81,4 @@ signature par la phrase demandée par SignPath :
 > [SignPath Foundation](https://signpath.org)
 
 puis publier une nouvelle Release (par exemple l'étiquette `v2.0.1`, après avoir mis le
-même numéro dans `interface.py` et `installation/installateur.iss`).
+même numéro dans `commun.py` et `installation/installateur.iss`).

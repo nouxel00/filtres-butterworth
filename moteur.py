@@ -2128,14 +2128,30 @@ def rapport(res: Resultat, choix: Optional[ChoixSeries] = None, pont: bool = Fal
     en valeurs normalisées et le contrôle du gabarit avec ces valeurs. `pont` :
     montage réel du passe-bande avec le pont diviseur d'entrée (gain 0 dB).
     """
-    g, nm = res.gabarit, res.norm
-    L: List[str] = []
+    g = res.gabarit
     titre = f"Synthèse d'un filtre de Butterworth ({NOMS_TYPES[g.type].lower()})"
-    L += [titre, "=" * len(titre), ""]
+    L: List[str] = [titre, "=" * len(titre), "", "Gabarit : " + resume_gabarit(g), ""]
+    L += _rapport_etapes_1_a_5(res)
+    if res.montages:
+        L += _rapport_composants(res, pont)
+        if choix is not None and choix.actif:
+            L += _rapport_valeurs_normalisees(res, choix, pont)
+        L += lignes_montage_reel(res, choix, pont) + [""]
+    L += _rapport_controle(res)
+    return "\n".join(L)
 
-    L += ["Gabarit : " + resume_gabarit(g), ""]
 
-    L.append("Étape 1 : normalisation du gabarit")
+def _ligne_controle(p: PointControle) -> str:
+    """Gain à une limite du gabarit, comparé à cette limite (rapport texte)."""
+    signe = "≥" if p.passante else "≤"
+    return (f"  G({p.nom}) = {fmt_nombre(p.G, 4)} dB   ({signe} {fmt_compact(p.limite)} dB)   "
+            + ("respecté" if p.ok else "NON RESPECTÉ"))
+
+
+def _rapport_etapes_1_a_5(res: Resultat) -> List[str]:
+    """Rapport, étapes 1 à 5 : normalisation, ordre, fonctions de transfert."""
+    nm = res.norm
+    L = ["Étape 1 : normalisation du gabarit"]
     if nm.B is not None:
         L.append(f"  f0 = √(fp+·fp−) = {fmt_si(nm.f_ref, 'Hz')}    B = (fp+ − fp−)/f0 = {fmt_nombre(nm.B)}")
     L.append(f"  {nm.formule_k} = {fmt_nombre(nm.k)}    (1/k = {fmt_nombre(1 / nm.k)})")
@@ -2162,66 +2178,67 @@ def rapport(res: Resultat, choix: Optional[ChoixSeries] = None, pont: bool = Fal
     for ligne in lignes_fonction_reelle(res):
         L.append("  " + ligne)
     L.append("")
+    return L
 
-    if res.montages:
-        L.append("Étape 6 : composants (cellules de Sallen & Key à gain unité, K = 1)")
-        w = "ω0" if g.type == "PM" else "ωp"
-        if res.ref_pb:
-            L.append(f"  Cellules passe-bas  : R0 = {fmt_si(res.ref_pb[0], 'Ω')}, "
-                     f"C0 = 1/(R0·{w}) = {fmt_si(res.ref_pb[1], 'F')}")
-        if res.ref_ph:
-            L.append(f"  Cellules passe-haut : C0 = {fmt_si(res.ref_ph[1], 'F')}, "
-                     f"R0 = 1/(C0·{w}) = {fmt_si(res.ref_ph[0], 'Ω')}")
-        L.append("")
-        L.append("  Repères du montage réel : R1, R2, R3… et C1, C2, C3… (dans chaque cellule : éléments en "
-                 "série, contre-réaction, puis masse).")
-        L.append(f"  {'Cellule':<9}{'Montage':<26}{'m':>10}{'q':>10}   Composants")
-        for e in etages_reels(res, None, pont):
-            m = e.montage
-            comp = "   ".join(f"{e.designation(k)} = {e.valeur(k)}" for k in e.ordre)     # pont compris
-            q = fmt_decimales(m.q) if m.q is not None else "—"
-            L.append(f"  {m.cellule.nom:<9}{m.libelle:<26}{fmt_decimales(m.m):>10}{q:>10}   {comp}")
-        L.append("")
-        ecart = res.ecart_verification()
-        L.append(f"  Vérification (transmittance recalculée à partir des composants) : écart relatif "
-                 f"maximal {ecart:.1e}")
-        att = res.attenuateur()
-        if g.type == "PM":
-            L.append(f"  Gain du montage à f0 : {fmt_nombre(20 * math.log10(res.gain_montage()), 3)} dB")
-        if att:
-            L.append("  " + phrase_pont(res, pont))
-        L.append("")
-        if choix is not None and choix.actif:
-            L.append(f"Valeurs normalisées : {choix.libelle()}")
-            if choix.associations:
-                L.append("  (« a + b » : deux résistances en série, ou deux condensateurs en parallèle, "
-                         "numérotés chacun)")
-            for e in etages_reels(res, choix, pont):
-                comp = "   ".join(f"{e.designation(k)} = {e.valeur(k)}" for k in e.ordre)
-                L.append(f"  {e.montage.cellule.nom:<9}{e.montage.libelle:<26}{comp}")
-            ajustees = phrase_ajustements(res, choix, pont)
-            if ajustees:
-                L.append("  " + ajustees)
-            L.append("  " + phrase_ecart_serie(res, choix, pont))
-            for p in res.points_controle_serie(choix):
-                signe = "≥" if p.passante else "≤"
-                L.append(f"  G({p.nom}) = {fmt_nombre(p.G, 4)} dB   ({signe} {fmt_compact(p.limite)} dB)   "
-                         + ("respecté" if p.ok else "NON RESPECTÉ"))
-            L.append("")
 
-    if res.montages:
-        L += lignes_montage_reel(res, choix, pont) + [""]
+def _rapport_composants(res: Resultat, pont: bool) -> List[str]:
+    """Rapport, étape 6 : valeurs de référence et valeurs calculées de chaque cellule."""
+    g = res.gabarit
+    L = ["Étape 6 : composants (cellules de Sallen & Key à gain unité, K = 1)"]
+    w = "ω0" if g.type == "PM" else "ωp"
+    if res.ref_pb:
+        L.append(f"  Cellules passe-bas  : R0 = {fmt_si(res.ref_pb[0], 'Ω')}, "
+                 f"C0 = 1/(R0·{w}) = {fmt_si(res.ref_pb[1], 'F')}")
+    if res.ref_ph:
+        L.append(f"  Cellules passe-haut : C0 = {fmt_si(res.ref_ph[1], 'F')}, "
+                 f"R0 = 1/(C0·{w}) = {fmt_si(res.ref_ph[0], 'Ω')}")
+    L.append("")
+    L.append("  Repères du montage réel : R1, R2, R3… et C1, C2, C3… (dans chaque cellule : éléments en "
+             "série, contre-réaction, puis masse).")
+    L.append(f"  {'Cellule':<9}{'Montage':<26}{'m':>10}{'q':>10}   Composants")
+    for e in etages_reels(res, None, pont):
+        m = e.montage
+        comp = "   ".join(f"{e.designation(k)} = {e.valeur(k)}" for k in e.ordre)     # pont compris
+        q = fmt_decimales(m.q) if m.q is not None else "—"
+        L.append(f"  {m.cellule.nom:<9}{m.libelle:<26}{fmt_decimales(m.m):>10}{q:>10}   {comp}")
+    L.append("")
+    ecart = res.ecart_verification()
+    L.append(f"  Vérification (transmittance recalculée à partir des composants) : écart relatif "
+             f"maximal {ecart:.1e}")
+    att = res.attenuateur()
+    if g.type == "PM":
+        L.append(f"  Gain du montage à f0 : {fmt_nombre(20 * math.log10(res.gain_montage()), 3)} dB")
+    if att:
+        L.append("  " + phrase_pont(res, pont))
+    L.append("")
+    return L
 
-    L.append("Contrôle du gabarit")
-    for p in res.points_controle():
-        signe = "≥" if p.passante else "≤"
-        L.append(f"  G({p.nom}) = {fmt_nombre(p.G, 4)} dB   ({signe} {fmt_compact(p.limite)} dB)   "
-                 + ("respecté" if p.ok else "NON RESPECTÉ"))
 
+def _rapport_valeurs_normalisees(res: Resultat, choix: ChoixSeries, pont: bool) -> List[str]:
+    """Rapport : composants en valeurs normalisées et contrôle du gabarit avec ces valeurs."""
+    L = [f"Valeurs normalisées : {choix.libelle()}"]
+    if choix.associations:
+        L.append("  (« a + b » : deux résistances en série, ou deux condensateurs en parallèle, "
+                 "numérotés chacun)")
+    for e in etages_reels(res, choix, pont):
+        comp = "   ".join(f"{e.designation(k)} = {e.valeur(k)}" for k in e.ordre)
+        L.append(f"  {e.montage.cellule.nom:<9}{e.montage.libelle:<26}{comp}")
+    ajustees = phrase_ajustements(res, choix, pont)
+    if ajustees:
+        L.append("  " + ajustees)
+    L.append("  " + phrase_ecart_serie(res, choix, pont))
+    L += [_ligne_controle(p) for p in res.points_controle_serie(choix)]
+    L.append("")
+    return L
+
+
+def _rapport_controle(res: Resultat) -> List[str]:
+    """Rapport : contrôle du gabarit (valeurs calculées), puis les remarques."""
+    L = ["Contrôle du gabarit"] + [_ligne_controle(p) for p in res.points_controle()]
     remarques = res.avertissements + res.remarques_montage
     if remarques:
         L += ["", "Remarques"] + [f"  - {a}" for a in remarques]
-    return "\n".join(L)
+    return L
 
 
 # =============================================================================

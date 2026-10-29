@@ -36,7 +36,17 @@ https://github.com/nouxel00/filtres-butterworth
                            rapport de deux exemples de vérification.
   graphes.py               Diagrammes de Bode avec gabarit, schémas des
                            cellules, schéma de câblage, formules.
-  interface.py             Fenêtre, saisie et affichage des résultats.
+  interface.py             Fenêtre principale : assemble la saisie et les
+                           résultats, lance le calcul, ouvre et enregistre
+                           les fichiers, construit les menus.
+  commun.py                Couleurs, polices, numéro de version (VERSION),
+                           préférences, petits éléments de la fenêtre.
+  saisie.py                Colonne de saisie : type de filtre, gabarit,
+                           croquis, séries de composants.
+  panneaux.py              Résultats : bandeau, onglets (Bode, étapes,
+                           composants, câblage) et accueil.
+  aide.py                  Menu Aide : mode d'emploi, nouveautés, visite
+                           guidée, fenêtre du cours.
   compte_rendu.py          Compte rendu PDF (menu Fichier).
   guide.py                 Cours « Comprendre Sallen & Key » (menu Aide, F2) :
                            textes, formules et figures des dix chapitres.
@@ -109,7 +119,7 @@ Installer sur un autre ordinateur
     %LOCALAPPDATA%\FiltresButterworth\matplotlib. La désinstallation
     l'efface ; effacée à la main, elle est refaite au lancement suivant.
 
-Nouvelle version : changer le numéro dans interface.py (VERSION, affiché par
+Nouvelle version : changer le numéro dans commun.py (VERSION, affiché par
 Aide > À propos) et dans installation\installateur.iss (Version), décrire ses
 nouveautés dans la partie 6 de ce fichier, puis relancer
 construire_windows.bat ; le nouvel installateur remplace l'ancienne version.
@@ -125,7 +135,7 @@ Construction automatique sur GitHub
   - Publier une version : sur GitHub, onglet Releases, « Draft a new release »,
     nouvelle étiquette vX.Y (par exemple v2.0) sur la branche main, puis
     « Publish release ». Le workflow construit l'installateur et le joint à la
-    Release. L'étiquette doit porter le même numéro que VERSION (interface.py)
+    Release. L'étiquette doit porter le même numéro que VERSION (commun.py)
     et Version (installation\installateur.iss), sinon la construction s'arrête.
   - Signature : la SignPath Foundation signe gratuitement les logiciels libres
     construits ainsi. La demande et la mise en place sont décrites dans

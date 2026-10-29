@@ -6,7 +6,7 @@
 #  « installateur »).
 #  À chaque Release publiée (onglet Releases, étiquette vX.Y, par exemple v2.0) :
 #  la même construction, puis l'installateur est joint à la Release. L'étiquette
-#  doit porter le numéro de version du programme (interface.py) et de
+#  doit porter le numéro de version du programme (commun.py) et de
 #  l'installateur (installateur.iss).
 #
 #  Signature (SignPath) : faite seulement quand les variables SIGNPATH_* du dépôt
@@ -47,7 +47,7 @@ jobs:
         shell: pwsh
         run: |
           $etiquette = "${{ github.event.release.tag_name }}".Substring(1)
-          $programme = (Select-String -Path interface.py -Pattern '^VERSION = "(.+)"').Matches[0].Groups[1].Value
+          $programme = (Select-String -Path commun.py -Pattern '^VERSION = "(.+)"').Matches[0].Groups[1].Value
           $installateur = (Select-String -Path installation\installateur.iss -Pattern '#define Version "(.+)"').Matches[0].Groups[1].Value
           if ($etiquette -ne $programme -or $etiquette -ne $installateur) {
             Write-Error "Étiquette v$etiquette, programme $programme, installateur $installateur : les numéros diffèrent."

@@ -8,7 +8,7 @@ retenir ». Quand un filtre est calculé, un encadré « Dans votre filtre » re
 chapitre au montage affiché.
 
 Ce module ne contient que le contenu (textes, formules, figures matplotlib) ;
-la fenêtre qui l'affiche est dans interface.py (FenetreGuide).
+la fenêtre qui l'affiche est dans aide.py (FenetreGuide).
 """
 
 from __future__ import annotations

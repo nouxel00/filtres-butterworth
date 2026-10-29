@@ -156,11 +156,18 @@ def netlist(res: mt.Resultat, choix: Optional[mt.ChoixSeries] = None, pont: bool
         raise ValueError("Le coupe-bande n'est pas réalisable en Sallen & Key : aucune netlist.")
     if simulateur not in SIMULATEURS or modele not in MODELES:
         raise ValueError("Simulateur ou modèle inconnu.")
-    g = res.gabarit
     etages = mt.etages_reels(res, choix, pont)
     amplis = mt.amplificateurs(etages)
+    n = _composants(etages, modele)
+    # Nœuds : ceux du montage, plus un nœud interne par amplificateur à un pôle
+    nb_noeuds = len(n.noeuds) + (len(amplis) if modele == "1pole" else 0)
+    entete = _entete(res, choix, pont, simulateur, modele, fichier, version, len(etages), amplis, nb_noeuds)
+    return "\n".join(_couper(entete) + n.lignes + _fin(res, simulateur)) + "\n", nb_noeuds
 
-    # Composants, étage par étage, chacun précédé d'un commentaire qui décrit sa cellule
+
+def _composants(etages: List[mt.Etage], modele: str) -> _Netlist:
+    """La source, puis les composants étage par étage, chacun précédé d'un commentaire qui
+    décrit sa cellule."""
     n = _Netlist()
     n.lignes.append("* Source")
     n.lignes.append("V1 E 0 AC 1")
@@ -177,10 +184,13 @@ def netlist(res: mt.Resultat, choix: Optional[mt.ChoixSeries] = None, pont: bool
         n.lignes += ["", "* " + ascii(cellule)]
         _etage(n, e, entree, k, sortie, modele)
         entree = sortie
-    # Nœuds : ceux du montage, plus un nœud interne par amplificateur à un pôle
-    nb_noeuds = len(n.noeuds) + (len(amplis) if modele == "1pole" else 0)
+    return n
 
-    debut, fin = _bornes(res)
+
+def _entete(res: mt.Resultat, choix: Optional[mt.ChoixSeries], pont: bool, simulateur: str, modele: str,
+            fichier: str, version: str, nb_etages: int, amplis: List[str], nb_noeuds: int) -> List[str]:
+    """Commentaires du début : filtre, valeurs, origine, gabarit, montage, nœuds."""
+    g = res.gabarit
     if choix is not None and choix.actif:
         valeurs = f"valeurs normalisées ({choix.court()})"
         if choix.ajustements:
@@ -188,9 +198,9 @@ def netlist(res: mt.Resultat, choix: Optional[mt.ChoixSeries] = None, pont: bool
     else:
         valeurs = "valeurs calculées"
     ordre = res.n * (2 if g.type in ("PM", "CB") else 1)
-    entete = [
-        ascii(f"Filtre {mt.NOMS_TYPES[g.type].lower()} de Butterworth d'ordre {ordre} ({len(etages)} "
-              f"cellule{'s' if len(etages) > 1 else ''})"),
+    return [
+        ascii(f"Filtre {mt.NOMS_TYPES[g.type].lower()} de Butterworth d'ordre {ordre} ({nb_etages} "
+              f"cellule{'s' if nb_etages > 1 else ''})"),
         "* " + ascii(valeurs[0].upper() + valeurs[1:]),
         "* " + ascii(f"Netlist {SIMULATEURS[simulateur]} créée par Filtres de Butterworth"
                      + (f" {version}" if version else "") + time.strftime(" le %d/%m/%Y à %H:%M")
@@ -209,7 +219,12 @@ def netlist(res: mt.Resultat, choix: Optional[mt.ChoixSeries] = None, pont: bool
            else "."),
         "",
     ]
-    fin_netlist = [
+
+
+def _fin(res: mt.Resultat, simulateur: str) -> List[str]:
+    """Modèles des amplificateurs, puis l'analyse en fréquence propre à chaque simulateur."""
+    debut, fin = _bornes(res)
+    lignes = [
         "",
         "* Amplificateur a un pole : gain statique 2e5, pole a 5 Hz (produit gain-bande 1 MHz).",
         "* G1 injecte 1 A/V x (V+ - V-) dans R1 // C1 ; E1 recopie la tension du noeud interne.",
@@ -228,18 +243,18 @@ def netlist(res: mt.Resultat, choix: Optional[mt.ChoixSeries] = None, pont: bool
         "* Analyse : diagramme de Bode de V(S)",
     ]
     if simulateur == "ltspice":
-        fin_netlist.append(f".ac dec 100 {valeur_spice(debut)} {valeur_spice(fin)}")
-        fin_netlist.append("* Gain aux frequences du gabarit : menu View > SPICE Error Log apres la simulation")
+        lignes.append(f".ac dec 100 {valeur_spice(debut)} {valeur_spice(fin)}")
+        lignes.append("* Gain aux frequences du gabarit : menu View > SPICE Error Log apres la simulation")
         for p in res.points_controle():
             nom = "G_" + ascii(p.nom).replace("-", "moins").replace("+", "plus")
-            fin_netlist.append(f".meas AC {nom} FIND V(S) AT={valeur_spice(p.f)}")
-        fin_netlist.append(".end")
+            lignes.append(f".meas AC {nom} FIND V(S) AT={valeur_spice(p.f)}")
+        lignes.append(".end")
     else:
-        fin_netlist.append(f".AC DEC 100 {valeur_spice(debut)} {valeur_spice(fin)}")
-        fin_netlist.append("* Courbes : Trace > Add Trace, puis DB(V(S)) et P(V(S))")
-        fin_netlist.append(".PROBE V(S) V(E)")
-        fin_netlist.append(".END")
-    return "\n".join(_couper(entete) + n.lignes + fin_netlist) + "\n", nb_noeuds
+        lignes.append(f".AC DEC 100 {valeur_spice(debut)} {valeur_spice(fin)}")
+        lignes.append("* Courbes : Trace > Add Trace, puis DB(V(S)) et P(V(S))")
+        lignes.append(".PROBE V(S) V(E)")
+        lignes.append(".END")
+    return lignes
 
 
 def _couper(lignes: List[str], largeur: int = 100) -> List[str]:

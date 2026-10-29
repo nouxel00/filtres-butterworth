@@ -11,7 +11,7 @@
 ;  le bureau. Les fichiers .filtre (filtres enregistrés) s'ouvrent d'un double-clic.
 ;  Il se désinstalle depuis Paramètres > Applications.
 ;
-;  Le numéro de version est aussi dans interface.py (VERSION) : changer les deux.
+;  Le numéro de version est aussi dans commun.py (VERSION) : changer les deux.
 ; =============================================================================
 
 #define Nom "Filtres de Butterworth"

@@ -305,6 +305,34 @@ def _formateur_reduit(x, _pos=None) -> str:
     return f"{x:g}".replace(".", ",")
 
 
+@dataclass
+class _Plage:
+    """Axe des fréquences d'un diagramme de Bode, réponse exacte du filtre et gabarit."""
+    x_min: float
+    x_max: float
+    x: np.ndarray
+    H: np.ndarray
+    phase: np.ndarray
+    passante: List[Tuple[float, float]]       # zones où G doit rester ≥ Gp
+    attenuee: List[Tuple[float, float]]       # zones où G doit rester ≤ Ga
+    reperes: List[Tuple[str, float]]          # fréquences du gabarit, écrites au-dessus du graphique
+    points: list                              # points de contrôle (gain aux limites du gabarit)
+    formater_x: Callable[[float], str]
+
+
+@dataclass
+class _Ajouts:
+    """Courbes ajoutées au Bode réel : montage aux valeurs normalisées, dispersion des
+    composants, montage avec de vrais µA741."""
+    serie: bool
+    gain2: Optional[np.ndarray] = None
+    phase2: Optional[np.ndarray] = None
+    x_disp: Optional[np.ndarray] = None
+    disp: Optional[mt.Dispersion] = None
+    gain3: Optional[np.ndarray] = None
+    phase3: Optional[np.ndarray] = None
+
+
 def tracer_bode(ax_g, ax_p, res: mt.Resultat, normalise: bool,
                 choix: Optional[mt.ChoixSeries] = None, aop: bool = False,
                 dispersion: bool = False) -> Courbe:
@@ -319,67 +347,97 @@ def tracer_bode(ax_g, ax_p, res: mt.Resultat, normalise: bool,
     ax_g.clear()
     ax_p.clear()
     g = res.gabarit
-    k = res.norm.k
 
-    # ----- 1. Plage de fréquences et réponse ---------------------------------
-    if normalise:
-        x_min, x_max = 0.1, 4 / k
-        x = np.logspace(math.log10(x_min), math.log10(x_max), 2000)
-        H = res.H_normalisee(x)
-        phase = res.phase_normalisee(x)
-        passante = [(x_min, 1.0)]                 # zones où G doit rester ≥ Gp
-        attenuee = [(1 / k, x_max)]               # zones où G doit rester ≤ Ga
-        reperes = [("1", 1.0), (f"1/k = {mt.fmt_compact(1 / k, 3)}", 1 / k)]
-        points = res.points_controle_normalises()
-        formater_x = lambda v: f"Ω = {mt.fmt_nombre(v, 4)}"      # noqa: E731
-    else:
-        if g.type == "PB":
-            x_min, x_max = g.fp / 10, 4 * g.fa
-            passante, attenuee = [(x_min, g.fp)], [(g.fa, x_max)]
-        elif g.type == "PH":
-            x_min, x_max = g.fa / 4, 10 * g.fp
-            passante, attenuee = [(g.fp, x_max)], [(x_min, g.fa)]
-        elif g.type == "PM":
-            x_min, x_max = g.fa_moins / 3, 3 * g.fa_plus
-            passante = [(g.fp_moins, g.fp_plus)]
-            attenuee = [(x_min, g.fa_moins), (g.fa_plus, x_max)]
-        else:
-            x_min, x_max = g.fp_moins / 3, 3 * g.fp_plus
-            passante = [(x_min, g.fp_moins), (g.fp_plus, x_max)]
-            attenuee = [(g.fa_moins, g.fa_plus)]
-        x = np.logspace(math.log10(x_min), math.log10(x_max), 2500)
-        H = res.H(x)
-        phase = res.phase(x)
-        reperes = [(mt.LIBELLES[nom], getattr(g, nom)) for nom in mt.FREQUENCES[g.type]]
-        points = res.points_controle()
-        formater_x = lambda v: mt.fmt_si(v, "Hz", 4)              # noqa: E731
-
-    gain = 20 * np.log10(np.maximum(np.abs(H), 1e-300))
-
-    # Montage construit avec les valeurs normalisées : même calcul, à partir des composants
-    serie = choix is not None and choix.actif and not normalise and bool(res.montages)
-    gain2 = phase2 = None
-    if serie:
-        H2 = res.H_serie(x, choix)
-        gain2 = 20 * np.log10(np.maximum(np.abs(H2), 1e-300))
-        phase2 = np.degrees(np.unwrap(np.angle(H2)))
-        phase2 += 360 * round((phase[0] - phase2[0]) / 360)     # même origine que la phase exacte
-    # Montages tirés au hasard dans les tolérances des composants (enveloppe du gain, sur une
-    # grille plus lâche : le dessin reste identique et le calcul quatre fois plus rapide)
-    x_disp = np.concatenate([x[::4], x[-1:]])
-    disp = mt.dispersion(res, x_disp, choix if serie else None) if dispersion and not normalise else None
-    # Montage avec de vrais µA741 (gain et produit gain-bande finis), avec les mêmes valeurs
-    # de composants que la courbe orange si une série est choisie
-    gain3 = phase3 = None
-    if aop and not normalise and res.montages:
-        H3 = res.H_aop(x, choix if serie else None)
-        gain3 = 20 * np.log10(np.maximum(np.abs(H3), 1e-300))
-        phase3 = np.degrees(np.unwrap(np.angle(H3)))
-        phase3 += 360 * round((phase[0] - phase3[0]) / 360)
+    # ----- 1. Plage de fréquences et réponses -----------------------------------
+    p = _plage_bode(res, normalise)
+    gain = 20 * np.log10(np.maximum(np.abs(p.H), 1e-300))
+    a = _courbes_ajoutees(res, p, normalise, choix, aop, dispersion)
 
     # ----- 2. Échelles -------------------------------------------------------
     y_max = 5.0
     y_min = 10 * math.floor((g.Ga - 25) / 10)
+    _echelles_bode(ax_g, ax_p, p.x_min, p.x_max, y_min, y_max, normalise)
+
+    # ----- 3. Gabarit : zones interdites ------------------------------------
+    etiquettes = _zones_interdites(ax_g, p, g.Gp, g.Ga, y_min, y_max)
+
+    # ----- 4. Courbes, légende, échelle de la phase ---------------------------
+    _courbes_bode(ax_g, ax_p, p.x, gain, p.phase, a, choix)
+    if a.gain2 is not None or a.gain3 is not None or a.disp is not None:
+        _legende_bode(ax_g, g.type)
+    _echelle_phase(ax_p, p.phase, a.phase2, a.phase3)
+
+    # ----- 5. Points de contrôle (gain obtenu aux limites du gabarit) -------
+    _points_controle(ax_g, p.points, etiquettes)
+    if a.gain3 is not None:
+        _points_aop(ax_g, res, p.points, choix if a.serie else None)
+
+    # ----- 6. Repères des fréquences du gabarit, au-dessus du graphique -----
+    _reperes_haut(ax_g, p.reperes, p.x_min, p.x_max)
+
+    return Courbe(p.x, gain, p.phase, p.formater_x, a.gain2, "Normalisées" if a.gain2 is not None else "",
+                  a.gain3, "µA741" if a.gain3 is not None else "", a.disp)
+
+
+def _plage_bode(res: mt.Resultat, normalise: bool) -> _Plage:
+    """Plage de fréquences, réponse exacte, zones du gabarit, repères et points de contrôle."""
+    g = res.gabarit
+    k = res.norm.k
+    if normalise:
+        x_min, x_max = 0.1, 4 / k
+        x = np.logspace(math.log10(x_min), math.log10(x_max), 2000)
+        return _Plage(x_min, x_max, x, res.H_normalisee(x), res.phase_normalisee(x),
+                      passante=[(x_min, 1.0)], attenuee=[(1 / k, x_max)],
+                      reperes=[("1", 1.0), (f"1/k = {mt.fmt_compact(1 / k, 3)}", 1 / k)],
+                      points=res.points_controle_normalises(),
+                      formater_x=lambda v: f"Ω = {mt.fmt_nombre(v, 4)}")
+    if g.type == "PB":
+        x_min, x_max = g.fp / 10, 4 * g.fa
+        passante, attenuee = [(x_min, g.fp)], [(g.fa, x_max)]
+    elif g.type == "PH":
+        x_min, x_max = g.fa / 4, 10 * g.fp
+        passante, attenuee = [(g.fp, x_max)], [(x_min, g.fa)]
+    elif g.type == "PM":
+        x_min, x_max = g.fa_moins / 3, 3 * g.fa_plus
+        passante = [(g.fp_moins, g.fp_plus)]
+        attenuee = [(x_min, g.fa_moins), (g.fa_plus, x_max)]
+    else:
+        x_min, x_max = g.fp_moins / 3, 3 * g.fp_plus
+        passante = [(x_min, g.fp_moins), (g.fp_plus, x_max)]
+        attenuee = [(g.fa_moins, g.fa_plus)]
+    x = np.logspace(math.log10(x_min), math.log10(x_max), 2500)
+    return _Plage(x_min, x_max, x, res.H(x), res.phase(x), passante, attenuee,
+                  reperes=[(mt.LIBELLES[nom], getattr(g, nom)) for nom in mt.FREQUENCES[g.type]],
+                  points=res.points_controle(),
+                  formater_x=lambda v: mt.fmt_si(v, "Hz", 4))
+
+
+def _courbes_ajoutees(res: mt.Resultat, p: _Plage, normalise: bool, choix: Optional[mt.ChoixSeries],
+                      aop: bool, dispersion: bool) -> _Ajouts:
+    """Réponses ajoutées au Bode réel (aucune au Bode normalisé)."""
+    # Montage construit avec les valeurs normalisées : même calcul, à partir des composants
+    a = _Ajouts(serie=choix is not None and choix.actif and not normalise and bool(res.montages))
+    if a.serie:
+        H2 = res.H_serie(p.x, choix)
+        a.gain2 = 20 * np.log10(np.maximum(np.abs(H2), 1e-300))
+        a.phase2 = np.degrees(np.unwrap(np.angle(H2)))
+        a.phase2 += 360 * round((p.phase[0] - a.phase2[0]) / 360)     # même origine que la phase exacte
+    # Montages tirés au hasard dans les tolérances des composants (enveloppe du gain, sur une
+    # grille plus lâche : le dessin reste identique et le calcul quatre fois plus rapide)
+    a.x_disp = np.concatenate([p.x[::4], p.x[-1:]])
+    a.disp = mt.dispersion(res, a.x_disp, choix if a.serie else None) if dispersion and not normalise else None
+    # Montage avec de vrais µA741 (gain et produit gain-bande finis), avec les mêmes valeurs
+    # de composants que la courbe orange si une série est choisie
+    if aop and not normalise and res.montages:
+        H3 = res.H_aop(p.x, choix if a.serie else None)
+        a.gain3 = 20 * np.log10(np.maximum(np.abs(H3), 1e-300))
+        a.phase3 = np.degrees(np.unwrap(np.angle(H3)))
+        a.phase3 += 360 * round((p.phase[0] - a.phase3[0]) / 360)
+    return a
+
+
+def _echelles_bode(ax_g, ax_p, x_min: float, x_max: float, y_min: float, y_max: float, normalise: bool) -> None:
+    """Axes logarithmiques, grilles, graduations et titres des axes."""
     for ax in (ax_g, ax_p):
         ax.set_xscale("log")
         ax.set_xlim(x_min, x_max)
@@ -407,16 +465,19 @@ def tracer_bode(ax_g, ax_p, res: mt.Resultat, normalise: bool,
         ax_p.xaxis.set_major_formatter(EngFormatter(unit="Hz"))
         ax_p.set_xlabel("Fréquence")
 
-    # ----- 3. Gabarit : zones interdites ------------------------------------
-    etiquettes: List[EtiquettePoint] = []          # valeurs lues aux points de contrôle (étape 5)
-    rectangles = [(a, b, y_min, g.Gp) for a, b in passante] + [(a, b, g.Ga, y_max) for a, b in attenuee]
+
+def _zones_interdites(ax_g, p: _Plage, Gp: float, Ga: float, y_min: float, y_max: float) -> List[EtiquettePoint]:
+    """Zones interdites du gabarit, leurs bords intérieurs et la mention « zone interdite ».
+    Renvoie la liste des étiquettes de valeurs, que les mentions évitent (remplie à l'étape 5)."""
+    etiquettes: List[EtiquettePoint] = []
+    rectangles = [(a, b, y_min, Gp) for a, b in p.passante] + [(a, b, Ga, y_max) for a, b in p.attenuee]
     for (xa, xb, ya, yb) in rectangles:
         ax_g.add_patch(Rectangle((xa, ya), xb - xa, yb - ya, facecolor=COULEURS["interdit"],
                                  alpha=0.075, edgecolor="none", zorder=0.5))
         # On ne trace que les bords intérieurs (ceux qui ne sont pas sur le cadre).
         bords = [((xa, xb), (ya, ya)), ((xa, xb), (yb, yb)), ((xa, xa), (ya, yb)), ((xb, xb), (ya, yb))]
         for xs, ys in bords:
-            sur_cadre = (xs[0] == xs[1] and xs[0] in (x_min, x_max)) or \
+            sur_cadre = (xs[0] == xs[1] and xs[0] in (p.x_min, p.x_max)) or \
                         (ys[0] == ys[1] and ys[0] in (y_min, y_max))
             if not sur_cadre:
                 ax_g.plot(xs, ys, color=COULEURS["interdit"], linewidth=1.1, alpha=0.75,
@@ -424,56 +485,65 @@ def tracer_bode(ax_g, ax_p, res: mt.Resultat, normalise: bool,
         # Mention « zone interdite » (écrite au tracé, s'il y a la place)
         ax_g.add_artist(TexteZone((xa, xb, ya, yb), etiquettes, fontsize=9, color=COULEURS["interdit"],
                                   alpha=0.75, zorder=1))
+    return etiquettes
 
-    # ----- 4. Courbes ---------------------------------------------------------
+
+def _courbes_bode(ax_g, ax_p, x: np.ndarray, gain: np.ndarray, phase: np.ndarray, a: _Ajouts,
+                  choix: Optional[mt.ChoixSeries]) -> None:
+    """Gain et phase : valeurs calculées, puis les courbes ajoutées (valeurs normalisées,
+    dispersion, µA741 réel). La légende du tracé précédent est retirée."""
     ax_g.plot(x, gain, color=COULEURS["courbe"], linewidth=2, solid_capstyle="round", zorder=3,
               label="Valeurs calculées")
     ax_p.plot(x, phase, color=COULEURS["courbe"], linewidth=2, solid_capstyle="round", zorder=3)
     fig = ax_g.get_figure()
     for ancienne in list(getattr(fig, "legends", [])):     # légende du tracé précédent
         ancienne.remove()
-    if gain2 is not None:
-        ax_g.plot(x, gain2, color=COULEURS["serie"], linewidth=2, solid_capstyle="round", zorder=4,
+    if a.gain2 is not None:
+        ax_g.plot(x, a.gain2, color=COULEURS["serie"], linewidth=2, solid_capstyle="round", zorder=4,
                   label=f"Valeurs normalisées ({choix.court()})")
-        ax_p.plot(x, phase2, color=COULEURS["serie"], linewidth=2, solid_capstyle="round", zorder=4)
-    if disp is not None:
-        couleur = COULEURS["serie"] if gain2 is not None else COULEURS["courbe"]
-        ax_g.fill_between(x_disp, disp.gain_min, disp.gain_max, color=couleur, alpha=0.2, linewidth=0, zorder=2.5,
-                          label=f"Dispersion (R ±{mt.fmt_compact(100 * disp.tol_R)} %, "
-                                f"C ±{mt.fmt_compact(100 * disp.tol_C)} %)")
-    libelle3 = ""
-    if gain3 is not None:
-        libelle3 = "µA741 réel" + (f" ({choix.court()})" if serie else "")
+        ax_p.plot(x, a.phase2, color=COULEURS["serie"], linewidth=2, solid_capstyle="round", zorder=4)
+    if a.disp is not None:
+        couleur = COULEURS["serie"] if a.gain2 is not None else COULEURS["courbe"]
+        ax_g.fill_between(a.x_disp, a.disp.gain_min, a.disp.gain_max, color=couleur, alpha=0.2, linewidth=0,
+                          zorder=2.5, label=f"Dispersion (R ±{mt.fmt_compact(100 * a.disp.tol_R)} %, "
+                                            f"C ±{mt.fmt_compact(100 * a.disp.tol_C)} %)")
+    if a.gain3 is not None:
+        libelle3 = "µA741 réel" + (f" ({choix.court()})" if a.serie else "")
         pointilles = dict(color=COULEURS["aop"], linewidth=2, linestyle=(0, (4, 2.4)), dash_capstyle="round",
                           zorder=4.5)
-        ax_g.plot(x, gain3, label=libelle3, **pointilles)
-        ax_p.plot(x, phase3, **pointilles)
-    if gain2 is not None or gain3 is not None or disp is not None:
-        # Légende sur une ligne au-dessus du graphique : elle ne cache ni les courbes ni les valeurs
-        poignees, libelles = ax_g.get_legend_handles_labels()
-        try:
-            # Une seule ligne si elle tient dans la largeur du graphique, sinon deux colonnes, sinon une
-            for ncol in sorted({len(libelles), 2, 1}, reverse=True):
-                legende = fig.legend(poignees, libelles, loc="outside upper right", ncol=ncol, fontsize=9.5,
-                                     frameon=False, handlelength=2.2, columnspacing=1.8)
-                try:
-                    trop_large = legende.get_window_extent(fig.canvas.get_renderer()).width > 0.97 * fig.bbox.width
-                except Exception:                # figure sans canevas : pas de mesure possible
-                    trop_large = False
-                if not trop_large or ncol == 1:
-                    break
-                legende.remove()
-        except (ValueError, TypeError):          # matplotlib < 3.7 : dans le graphique
-            place = {"PB": "lower left", "PH": "lower right"}.get(g.type, "lower center")
-            legende = ax_g.legend(loc=place, fontsize=9.5, frameon=True, handlelength=1.6, borderpad=0.6)
-            legende.get_frame().set(facecolor=COULEURS["fond"], edgecolor=COULEURS["axe"], linewidth=0.6,
-                                    alpha=0.95)
-            legende.set_zorder(7)
-        for texte in legende.get_texts():
-            texte.set_color(COULEURS["encre"])
+        ax_g.plot(x, a.gain3, label=libelle3, **pointilles)
+        ax_p.plot(x, a.phase3, **pointilles)
 
-    # Phase : graduations multiples de 90° (180°, 360°… si l'axe est petit)
-    toutes = np.concatenate([p for p in (phase, phase2, phase3) if p is not None])
+
+def _legende_bode(ax_g, type_filtre: str) -> None:
+    """Légende sur une ligne au-dessus du graphique : elle ne cache ni les courbes ni les valeurs."""
+    fig = ax_g.get_figure()
+    poignees, libelles = ax_g.get_legend_handles_labels()
+    try:
+        # Une seule ligne si elle tient dans la largeur du graphique, sinon deux colonnes, sinon une
+        for ncol in sorted({len(libelles), 2, 1}, reverse=True):
+            legende = fig.legend(poignees, libelles, loc="outside upper right", ncol=ncol, fontsize=9.5,
+                                 frameon=False, handlelength=2.2, columnspacing=1.8)
+            try:
+                trop_large = legende.get_window_extent(fig.canvas.get_renderer()).width > 0.97 * fig.bbox.width
+            except Exception:                # figure sans canevas : pas de mesure possible
+                trop_large = False
+            if not trop_large or ncol == 1:
+                break
+            legende.remove()
+    except (ValueError, TypeError):          # matplotlib < 3.7 : dans le graphique
+        place = {"PB": "lower left", "PH": "lower right"}.get(type_filtre, "lower center")
+        legende = ax_g.legend(loc=place, fontsize=9.5, frameon=True, handlelength=1.6, borderpad=0.6)
+        legende.get_frame().set(facecolor=COULEURS["fond"], edgecolor=COULEURS["axe"], linewidth=0.6,
+                                alpha=0.95)
+        legende.set_zorder(7)
+    for texte in legende.get_texts():
+        texte.set_color(COULEURS["encre"])
+
+
+def _echelle_phase(ax_p, *phases: Optional[np.ndarray]) -> None:
+    """Phase : graduations multiples de 90° (180°, 360°… si l'axe est petit)."""
+    toutes = np.concatenate([p for p in phases if p is not None])
     p_min, p_max = float(np.min(toutes)), float(np.max(toutes))
     pas = 90 if p_max - p_min <= 720 else (180 if p_max - p_min <= 1440 else 360)
     ax_p.set_ylim(pas * math.floor((p_min - 10) / pas), pas * math.ceil((p_max + 10) / pas))
@@ -481,17 +551,22 @@ def tracer_bode(ax_g, ax_p, res: mt.Resultat, normalise: bool,
     ax_p.yaxis.set_major_formatter(FuncFormatter(lambda v, _p: f"{v:.0f}°".replace("-", "−")))
     ax_p.set_ylabel("Phase")
 
-    # ----- 5. Points de contrôle (gain obtenu aux limites du gabarit) -------
-    def cote_texte(dx: float) -> str:
-        return "left" if dx > 0 else "right"
 
+def _cote_texte(dx: float) -> str:
+    """Alignement d'une étiquette placée du côté `dx` de son point."""
+    return "left" if dx > 0 else "right"
+
+
+def _points_controle(ax_g, points: list, etiquettes: List[EtiquettePoint]) -> None:
+    """Gain obtenu aux limites du gabarit : un point et sa valeur, placée là où elle ne
+    gêne pas (les mentions « zone interdite » évitent ensuite ces étiquettes)."""
     for p in points:
         ax_g.plot([p.f], [p.G], "o", markersize=7, markerfacecolor=COULEURS["courbe"],
                   markeredgecolor=COULEURS["fond"], markeredgewidth=1.6, zorder=5)
         # En dessous, du côté de la bande passante : place libre, dans le cadre
-        dessous = (p.cote * 7, -7, cote_texte(p.cote), "top")
+        dessous = (p.cote * 7, -7, _cote_texte(p.cote), "top")
         # Bande passante : au-dessus, décalée du côté où la courbe chute (s'il y a la place)
-        emplacements = [(-p.cote * 12, 4, cote_texte(-p.cote), "bottom"), dessous] if p.passante else [dessous]
+        emplacements = [(-p.cote * 12, 4, _cote_texte(-p.cote), "bottom"), dessous] if p.passante else [dessous]
         etiquette = EtiquettePoint(f"{mt.fmt_nombre(p.G, 3)} dB", (p.f, p.G), emplacements, etiquettes,
                                    fontsize=9.5, color=COULEURS["encre"], zorder=6, clip_on=False,
                                    bbox=dict(boxstyle="round,pad=0.2", facecolor=COULEURS["fond"],
@@ -500,18 +575,13 @@ def tracer_bode(ax_g, ax_p, res: mt.Resultat, normalise: bool,
         ax_g.add_artist(etiquette)
         etiquettes.append(etiquette)
 
-    # Avec de vrais µA741 : point violet aux limites du gabarit où le gain s'écarte du calcul
-    if gain3 is not None:
-        for p_ideal, p_aop in zip(points, res.points_controle_aop(choix if serie else None)):
-            if abs(p_aop.G - p_ideal.G) > 0.05:
-                ax_g.plot([p_aop.f], [p_aop.G], "o", markersize=6, markerfacecolor=COULEURS["aop"],
-                          markeredgecolor=COULEURS["fond"], markeredgewidth=1.4, zorder=5.5)
 
-    # ----- 6. Repères des fréquences du gabarit, au-dessus du graphique -----
-    _reperes_haut(ax_g, reperes, x_min, x_max)
-
-    return Courbe(x, gain, phase, formater_x, gain2, "Normalisées" if gain2 is not None else "",
-                  gain3, "µA741" if gain3 is not None else "", disp)
+def _points_aop(ax_g, res: mt.Resultat, points: list, choix: Optional[mt.ChoixSeries]) -> None:
+    """Avec de vrais µA741 : point violet aux limites du gabarit où le gain s'écarte du calcul."""
+    for p_ideal, p_aop in zip(points, res.points_controle_aop(choix)):
+        if abs(p_aop.G - p_ideal.G) > 0.05:
+            ax_g.plot([p_aop.f], [p_aop.G], "o", markersize=6, markerfacecolor=COULEURS["aop"],
+                      markeredgecolor=COULEURS["fond"], markeredgewidth=1.4, zorder=5.5)
 
 
 def fmt_db(g: float) -> str:
@@ -779,113 +849,124 @@ def dessiner_cellule(fig: Figure, etage: mt.Etage) -> None:
     ax.set_axis_off()
     d = _Dessin(ax)
     s = etage.montage.structure
-
     if s in ("SK_PB", "SK_PH"):
-        # Disposition commune : entrée, série, masse et contre-réaction. Avec le pont diviseur,
-        # la cellule s'allonge pour loger la résistance vers la masse et son étiquette, et
-        # l'élément série aussi, pour que l'étiquette de l'élément vers la masse (à sa gauche,
-        # souvent longue : « C3 + C4  (697,3 pF) ») ne touche pas la résistance du pont.
-        ys, ym, yc = 2.4, 0.6, 4.25
-        dx, ecart = (1.6, 0.9) if etage.pont else (0.0, 0.0)
-        xe, xa = 0.6, 3.3 + dx
-        dx += ecart
-        xb, xamp, xsortie, xs = 6.0 + dx, 6.55 + dx, 8.75 + dx, 10.6 + dx
-        if s == "SK_PB":
-            noms = ("R1", "R2", "C1", "C2")
-            types = (d.resistance, d.resistance, d.condensateur, d.condensateur)
-        else:
-            noms = ("C1", "C2", "R1", "R2")
-            types = (d.condensateur, d.condensateur, d.resistance, d.resistance)
-        d.borne(xe, ys)
-        d.borne(xe, ym)
-        types[0]((xe, ys), (xa, ys))                       # entrée (Y1)
-        types[1]((xa, ys), (xb, ys))                       # série (Y3)
-        d.fil((xb, ys), (xamp, ys))
-        sortie = d.suiveur(xamp, ys)
-        d.fil(sortie, (xs, ys))
-        types[2]((xb, ys), (xb, ym))                       # vers la masse (Y4)
-        d.fil((xa, ys), (xa, yc))
-        types[3]((xa, yc), (xsortie, yc))                  # contre-réaction (Y2)
-        d.fil((xsortie, yc), (xsortie, ys))
-        d.fil((xe, ym), (xs, ym))
-        for p in ((xa, ys), (xb, ys), (xsortie, ys), (xb, ym)):
-            d.noeud(*p)
-        if etage.pont:                                     # pont diviseur : résistance vers la masse
-            d.resistance((xa, ys), (xa, ym))
-            d.noeud(xa, ym)
-            d.etiquette(xa - 0.36, (ys + ym) / 2, *_textes("Rb", etage), place="gauche")
-        d.borne(xs, ys)
-        d.borne(xs, ym)
-        d.etiquette((xe + xa) / 2, ys + 0.2, *_textes(noms[0], etage))
-        d.etiquette((xa + xb) / 2, ys + 0.2, *_textes(noms[1], etage))
-        d.etiquette(xb - 0.36, (ys + ym) / 2, *_textes(noms[2], etage), place="gauche")
-        d.etiquette((xa + xsortie) / 2, yc + 0.3, *_textes(noms[3], etage))
-        d.tension(xe + 0.32, ym, ys, "$V_1$")
-        d.tension(xs - 0.32, ym, ys, "$V_2$", gauche=True)
-        ax.set_xlim(0.1, 11.1 + dx)
-        ax.set_ylim(0.15, 5.35)
-
+        _schema_sallen_key(d, ax, etage, s)
     elif s in ("RC", "CR"):
-        ys, ym = 2.4, 0.6
-        xe, xn, xs = 0.6, 4.3, 7.0
-        serie, masse = (("R1", "C1") if s == "RC" else ("C1", "R1"))
-        type_serie = d.resistance if s == "RC" else d.condensateur
-        type_masse = d.condensateur if s == "RC" else d.resistance
-        d.borne(xe, ys)
-        d.borne(xe, ym)
-        type_serie((xe, ys), (xn, ys))
-        d.fil((xn, ys), (xs, ys))
-        type_masse((xn, ys), (xn, ym))
-        d.fil((xe, ym), (xs, ym))
-        d.noeud(xn, ys)
-        d.noeud(xn, ym)
-        d.borne(xs, ys)
-        d.borne(xs, ym)
-        d.etiquette((xe + xn) / 2, ys + 0.2, *_textes(serie, etage))
-        # Étiquette de l'élément vers la masse à sa gauche, comme dans les cellules de
-        # Sallen & Key : à droite, une association la ferait buter sur V2
-        d.etiquette(xn - 0.36, (ys + ym) / 2, *_textes(masse, etage), place="gauche")
-        d.tension(xe + 0.32, ym, ys, "$V_1$")
-        d.tension(xs - 0.32, ym, ys, "$V_2$", gauche=True)
-        ax.set_xlim(-1.6, 9.2)
-        ax.set_ylim(0.15, 3.6)
-
+        _schema_premier_ordre(d, ax, etage, s)
     else:   # cellule passe-bande de Rauch (centre d'un passe-bande d'ordre impair)
-        # Branches assez longues pour les étiquettes des associations (« R5 + R6  (104,7 kΩ) »)
-        ys, ym, y3, y4 = 2.8, 0.6, 4.05, 5.45
-        xe, xx, xn, xaop, xsortie, xs = 0.6, 4.4, 8.4, 9.05, 12.4, 14.05
-        y_plus = ys - 0.8
-        d.borne(xe, ys)
-        d.borne(xe, ym)
-        d.resistance((xe, ys), (xx, ys))                   # R1 = q·R0 (entrée)
-        d.resistance((xx, ys), (xx, ym))                   # R2 = m·R0/(1 − m²)
-        d.condensateur((xx, ys), (xn, ys))                 # C2 vers l'entrée −
-        d.fil((xn, ys), (xaop, ys))
-        sortie = d.aop(xaop, ys, y_plus)
-        d.fil((xaop, y_plus), (xaop - 0.3, y_plus), (xaop - 0.3, ym))
-        d.fil(sortie, (xs, sortie[1]))
-        d.fil((xn, ys), (xn, y3))
-        d.resistance((xn, y3), (xsortie, y3))              # R3 = q·R0 (contre-réaction)
-        d.fil((xsortie, y3), (xsortie, sortie[1]))
-        d.fil((xx, ys), (xx, y4))
-        d.condensateur((xx, y4), (xn, y4))                 # C1 vers la sortie (au-dessus de C2,
-        d.fil((xn, y4), (xsortie, y4), (xsortie, y3))      # loin de l'étiquette de R3)
-        d.fil((xe, ym), (xs, ym))
-        for p in ((xx, ys), (xn, ys), (xsortie, sortie[1]), (xsortie, y3), (xx, ym), (xaop - 0.3, ym)):
-            d.noeud(*p)
-        d.borne(xs, sortie[1])
-        d.borne(xs, ym)
-        d.etiquette((xe + xx) / 2, ys + 0.2, *_textes("R1", etage))
-        d.etiquette(xx + 0.2, (ys + ym) / 2, *_textes("R2", etage), place="droite")
-        d.etiquette((xx + xn) / 2, ys + 0.3, *_textes("C2", etage))
-        d.etiquette((xn + xsortie) / 2, y3 + 0.2, *_textes("R3", etage))
-        d.etiquette((xx + xn) / 2, y4 + 0.3, *_textes("C1", etage))
-        d.tension(xe + 0.32, ym, ys, "$V_1$")
-        d.tension(xs - 0.32, ym, sortie[1], "$V_2$", gauche=True)
-        ax.set_xlim(0.1, 14.55)
-        ax.set_ylim(0.15, 6.75)
-
+        _schema_rauch(d, ax, etage)
     ax.set_aspect("equal", anchor="C")
+
+
+def _schema_sallen_key(d: "_Dessin", ax, etage: mt.Etage, s: str) -> None:
+    """Cellule de Sallen & Key, passe-bas ou passe-haut (avec, s'il y a lieu, le pont diviseur)."""
+    # Disposition commune : entrée, série, masse et contre-réaction. Avec le pont diviseur,
+    # la cellule s'allonge pour loger la résistance vers la masse et son étiquette, et
+    # l'élément série aussi, pour que l'étiquette de l'élément vers la masse (à sa gauche,
+    # souvent longue : « C3 + C4  (697,3 pF) ») ne touche pas la résistance du pont.
+    ys, ym, yc = 2.4, 0.6, 4.25
+    dx, ecart = (1.6, 0.9) if etage.pont else (0.0, 0.0)
+    xe, xa = 0.6, 3.3 + dx
+    dx += ecart
+    xb, xamp, xsortie, xs = 6.0 + dx, 6.55 + dx, 8.75 + dx, 10.6 + dx
+    if s == "SK_PB":
+        noms = ("R1", "R2", "C1", "C2")
+        types = (d.resistance, d.resistance, d.condensateur, d.condensateur)
+    else:
+        noms = ("C1", "C2", "R1", "R2")
+        types = (d.condensateur, d.condensateur, d.resistance, d.resistance)
+    d.borne(xe, ys)
+    d.borne(xe, ym)
+    types[0]((xe, ys), (xa, ys))                       # entrée (Y1)
+    types[1]((xa, ys), (xb, ys))                       # série (Y3)
+    d.fil((xb, ys), (xamp, ys))
+    sortie = d.suiveur(xamp, ys)
+    d.fil(sortie, (xs, ys))
+    types[2]((xb, ys), (xb, ym))                       # vers la masse (Y4)
+    d.fil((xa, ys), (xa, yc))
+    types[3]((xa, yc), (xsortie, yc))                  # contre-réaction (Y2)
+    d.fil((xsortie, yc), (xsortie, ys))
+    d.fil((xe, ym), (xs, ym))
+    for p in ((xa, ys), (xb, ys), (xsortie, ys), (xb, ym)):
+        d.noeud(*p)
+    if etage.pont:                                     # pont diviseur : résistance vers la masse
+        d.resistance((xa, ys), (xa, ym))
+        d.noeud(xa, ym)
+        d.etiquette(xa - 0.36, (ys + ym) / 2, *_textes("Rb", etage), place="gauche")
+    d.borne(xs, ys)
+    d.borne(xs, ym)
+    d.etiquette((xe + xa) / 2, ys + 0.2, *_textes(noms[0], etage))
+    d.etiquette((xa + xb) / 2, ys + 0.2, *_textes(noms[1], etage))
+    d.etiquette(xb - 0.36, (ys + ym) / 2, *_textes(noms[2], etage), place="gauche")
+    d.etiquette((xa + xsortie) / 2, yc + 0.3, *_textes(noms[3], etage))
+    d.tension(xe + 0.32, ym, ys, "$V_1$")
+    d.tension(xs - 0.32, ym, ys, "$V_2$", gauche=True)
+    ax.set_xlim(0.1, 11.1 + dx)
+    ax.set_ylim(0.15, 5.35)
+
+
+def _schema_premier_ordre(d: "_Dessin", ax, etage: mt.Etage, s: str) -> None:
+    """Cellule du premier ordre, RC (passe-bas) ou CR (passe-haut)."""
+    ys, ym = 2.4, 0.6
+    xe, xn, xs = 0.6, 4.3, 7.0
+    serie, masse = (("R1", "C1") if s == "RC" else ("C1", "R1"))
+    type_serie = d.resistance if s == "RC" else d.condensateur
+    type_masse = d.condensateur if s == "RC" else d.resistance
+    d.borne(xe, ys)
+    d.borne(xe, ym)
+    type_serie((xe, ys), (xn, ys))
+    d.fil((xn, ys), (xs, ys))
+    type_masse((xn, ys), (xn, ym))
+    d.fil((xe, ym), (xs, ym))
+    d.noeud(xn, ys)
+    d.noeud(xn, ym)
+    d.borne(xs, ys)
+    d.borne(xs, ym)
+    d.etiquette((xe + xn) / 2, ys + 0.2, *_textes(serie, etage))
+    # Étiquette de l'élément vers la masse à sa gauche, comme dans les cellules de
+    # Sallen & Key : à droite, une association la ferait buter sur V2
+    d.etiquette(xn - 0.36, (ys + ym) / 2, *_textes(masse, etage), place="gauche")
+    d.tension(xe + 0.32, ym, ys, "$V_1$")
+    d.tension(xs - 0.32, ym, ys, "$V_2$", gauche=True)
+    ax.set_xlim(-1.6, 9.2)
+    ax.set_ylim(0.15, 3.6)
+
+
+def _schema_rauch(d: "_Dessin", ax, etage: mt.Etage) -> None:
+    """Cellule passe-bande de Rauch (centre d'un passe-bande d'ordre impair)."""
+    # Branches assez longues pour les étiquettes des associations (« R5 + R6  (104,7 kΩ) »)
+    ys, ym, y3, y4 = 2.8, 0.6, 4.05, 5.45
+    xe, xx, xn, xaop, xsortie, xs = 0.6, 4.4, 8.4, 9.05, 12.4, 14.05
+    y_plus = ys - 0.8
+    d.borne(xe, ys)
+    d.borne(xe, ym)
+    d.resistance((xe, ys), (xx, ys))                   # R1 = q·R0 (entrée)
+    d.resistance((xx, ys), (xx, ym))                   # R2 = m·R0/(1 − m²)
+    d.condensateur((xx, ys), (xn, ys))                 # C2 vers l'entrée −
+    d.fil((xn, ys), (xaop, ys))
+    sortie = d.aop(xaop, ys, y_plus)
+    d.fil((xaop, y_plus), (xaop - 0.3, y_plus), (xaop - 0.3, ym))
+    d.fil(sortie, (xs, sortie[1]))
+    d.fil((xn, ys), (xn, y3))
+    d.resistance((xn, y3), (xsortie, y3))              # R3 = q·R0 (contre-réaction)
+    d.fil((xsortie, y3), (xsortie, sortie[1]))
+    d.fil((xx, ys), (xx, y4))
+    d.condensateur((xx, y4), (xn, y4))                 # C1 vers la sortie (au-dessus de C2,
+    d.fil((xn, y4), (xsortie, y4), (xsortie, y3))      # loin de l'étiquette de R3)
+    d.fil((xe, ym), (xs, ym))
+    for p in ((xx, ys), (xn, ys), (xsortie, sortie[1]), (xsortie, y3), (xx, ym), (xaop - 0.3, ym)):
+        d.noeud(*p)
+    d.borne(xs, sortie[1])
+    d.borne(xs, ym)
+    d.etiquette((xe + xx) / 2, ys + 0.2, *_textes("R1", etage))
+    d.etiquette(xx + 0.2, (ys + ym) / 2, *_textes("R2", etage), place="droite")
+    d.etiquette((xx + xn) / 2, ys + 0.3, *_textes("C2", etage))
+    d.etiquette((xn + xsortie) / 2, y3 + 0.2, *_textes("R3", etage))
+    d.etiquette((xx + xn) / 2, y4 + 0.3, *_textes("C1", etage))
+    d.tension(xe + 0.32, ym, ys, "$V_1$")
+    d.tension(xs - 0.32, ym, sortie[1], "$V_2$", gauche=True)
+    ax.set_xlim(0.1, 14.55)
+    ax.set_ylim(0.15, 6.75)
 
 
 # =============================================================================
@@ -1218,23 +1299,7 @@ def schema_cablage(res: mt.Resultat, choix: Optional[mt.ChoixSeries] = None,
     lignes = repartir_lignes(etages, largeur_pouces / ECHELLE_MIN)
     largeur = max([LARGEUR_MIN] + [_largeur_ligne(ligne) for ligne in lignes])
     echelle = max(0.26, min(ECHELLE_MAX, largeur_pouces / largeur))
-    normalise_R = bool(choix and choix.resistances)
-    normalise_C = bool(choix and choix.condensateurs)
-    aops = mt.amplificateurs(etages)
-
-    # Titre
-    g = res.gabarit
-    ordre = 2 * res.n if g.type in ("PM", "CB") else res.n
-    titre = f"Schéma de câblage : filtre {mt.NOMS_TYPES[g.type].lower()} de Butterworth d'ordre {ordre}"
-    valeurs = (f"valeurs normalisées ({choix.libelle()})" if choix is not None and choix.actif
-               else "valeurs calculées, à arrondir aux valeurs disponibles")
-    gain = ""
-    if res.attenuateur():                                    # passe-bande à cellules de gain unité
-        gain = (" · gain 0 dB à f0 (pont diviseur d'entrée)" if pont else
-                f" · gain {mt.fmt_nombre(20 * math.log10(res.gain_montage()), 3)} dB à f0 (sans pont diviseur)")
-    sous_titre = _texte_coupe(f"{len(etages)} cellule{'s' if len(etages) > 1 else ''}, {len(aops)} "
-                              f"{mt.AOP_NOM} ({mt._plage(aops)}), alimentation {mt.ALIMENTATION}{gain} · "
-                              f"{valeurs} · numéros de broches en bleu", largeur - 1.0, 9, echelle)
+    titre, sous_titre = _titres_cablage(res, choix, pont, etages, largeur, echelle)
 
     def pt(points: float) -> float:
         """Distance en unités du schéma correspondant à `points` points typographiques :
@@ -1258,7 +1323,7 @@ def schema_cablage(res: mt.Resultat, choix: Optional[mt.ChoixSeries] = None,
     ax.set_axis_off()
     ax.set_xlim(0, largeur)
     ax.set_ylim(-hauteur, 0)
-    d = _DessinReel(ax, normalise_R, normalise_C)
+    d = _DessinReel(ax, bool(choix and choix.resistances), bool(choix and choix.condensateurs))
 
     ax.text(0.5, -pt(22), titre, ha="left", va="baseline", fontsize=12.5, fontweight="bold",
             color=COULEURS["encre"])
@@ -1267,56 +1332,83 @@ def schema_cablage(res: mt.Resultat, choix: Optional[mt.ChoixSeries] = None,
                 color=COULEURS["encre2"])
 
     # Lignes d'étages
-    lettres = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
     y = -hauteur_titre
     for r, (ligne, haut) in enumerate(zip(lignes, hauts)):
-        ys = y - haut - 0.3
-        ym = ys - 3.0
-        x_fin = largeur - 0.9
-        # début de ligne : borne d'entrée, ou renvoi depuis la ligne précédente
-        if r == 0:
-            d.borne(0.9, ys)
-            d.borne(0.9, ym)
-            d.tension(1.22, ym, ys, "$V_e$")
-            d.fil((0.9, ys), (DEBUT_LIGNE, ys))
-            x_masse = 0.9
-            d.masse(1.6, ym)
-            d.noeud(1.6, ym)
-        else:
-            d.renvoi(0.35, ys, lettres[(r - 1) % 26])
-            d.fil((1.4, ys), (DEBUT_LIGNE, ys))
-            x_masse = 1.0
-            d.masse(x_masse, ym)
-        x = DEBUT_LIGNE
-        for i, e in enumerate(ligne):
-            debut = x
-            x = _dessiner_etage(d, e, x, ym)
-            legende = _legende_etage(e)
-            # légende centrée sous l'étage, ou alignée sur son début si elle est plus large
-            if len(legende) <= _caracteres(x - debut, 8.5, echelle):
-                ax.text((debut + x) / 2, ym - 0.45, legende, ha="center", va="top", fontsize=8.5,
-                        color=COULEURS["encre2"])
-            else:
-                ax.text(debut, ym - 0.45, legende, ha="left", va="top", fontsize=8.5, color=COULEURS["encre2"])
-            if i < len(ligne) - 1:
-                d.fil((x, ys), (x + INTERVALLE, ys))
-                d.separateur(x + INTERVALLE / 2, ym - 0.55, ys + haut - 0.3)
-                x += INTERVALLE
-        # fin de ligne : borne de sortie, ou renvoi vers la ligne suivante
-        if r == len(lignes) - 1:
-            d.fil((x, ys), (x_fin, ys))
-            d.borne(x_fin, ys)
-            d.borne(x_fin, ym)
-            d.tension(x_fin - 0.32, ym, ys, "$V_s$", gauche=True)
-            d.fil((x_masse, ym), (x_fin, ym))
-        else:
-            d.fil((x, ys), (largeur - 1.6, ys))
-            d.renvoi(largeur - 1.6, ys, lettres[r % 26])
-            d.fil((x_masse, ym), (largeur - 1.0, ym))
+        _ligne_cablage(d, ax, ligne, y - haut - 0.3, haut, r, len(lignes), largeur, echelle)
         y -= haut + 3.0 + 1.6
 
     _dessiner_blocs(ax, blocs, y - 0.1, largeur, pt)
     return fig
+
+
+def _titres_cablage(res: mt.Resultat, choix: Optional[mt.ChoixSeries], pont: bool, etages: List[mt.Etage],
+                    largeur: float, echelle: float) -> Tuple[str, List[str]]:
+    """Titre du schéma de câblage, et son sous-titre coupé en lignes."""
+    g = res.gabarit
+    aops = mt.amplificateurs(etages)
+    ordre = 2 * res.n if g.type in ("PM", "CB") else res.n
+    titre = f"Schéma de câblage : filtre {mt.NOMS_TYPES[g.type].lower()} de Butterworth d'ordre {ordre}"
+    valeurs = (f"valeurs normalisées ({choix.libelle()})" if choix is not None and choix.actif
+               else "valeurs calculées, à arrondir aux valeurs disponibles")
+    gain = ""
+    if res.attenuateur():                                    # passe-bande à cellules de gain unité
+        gain = (" · gain 0 dB à f0 (pont diviseur d'entrée)" if pont else
+                f" · gain {mt.fmt_nombre(20 * math.log10(res.gain_montage()), 3)} dB à f0 (sans pont diviseur)")
+    sous_titre = _texte_coupe(f"{len(etages)} cellule{'s' if len(etages) > 1 else ''}, {len(aops)} "
+                              f"{mt.AOP_NOM} ({mt._plage(aops)}), alimentation {mt.ALIMENTATION}{gain} · "
+                              f"{valeurs} · numéros de broches en bleu", largeur - 1.0, 9, echelle)
+    return titre, sous_titre
+
+
+LETTRES_RENVOIS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+
+def _ligne_cablage(d: "_DessinReel", ax, ligne: List[mt.Etage], ys: float, haut: float, r: int, nb_lignes: int,
+                   largeur: float, echelle: float) -> None:
+    """Une ligne du schéma de câblage (signal en `ys`) : début (entrée ou renvoi), étages avec
+    leur légende, fin (sortie ou renvoi vers la ligne suivante)."""
+    ym = ys - 3.0
+    x_fin = largeur - 0.9
+    # début de ligne : borne d'entrée, ou renvoi depuis la ligne précédente
+    if r == 0:
+        d.borne(0.9, ys)
+        d.borne(0.9, ym)
+        d.tension(1.22, ym, ys, "$V_e$")
+        d.fil((0.9, ys), (DEBUT_LIGNE, ys))
+        x_masse = 0.9
+        d.masse(1.6, ym)
+        d.noeud(1.6, ym)
+    else:
+        d.renvoi(0.35, ys, LETTRES_RENVOIS[(r - 1) % 26])
+        d.fil((1.4, ys), (DEBUT_LIGNE, ys))
+        x_masse = 1.0
+        d.masse(x_masse, ym)
+    x = DEBUT_LIGNE
+    for i, e in enumerate(ligne):
+        debut = x
+        x = _dessiner_etage(d, e, x, ym)
+        legende = _legende_etage(e)
+        # légende centrée sous l'étage, ou alignée sur son début si elle est plus large
+        if len(legende) <= _caracteres(x - debut, 8.5, echelle):
+            ax.text((debut + x) / 2, ym - 0.45, legende, ha="center", va="top", fontsize=8.5,
+                    color=COULEURS["encre2"])
+        else:
+            ax.text(debut, ym - 0.45, legende, ha="left", va="top", fontsize=8.5, color=COULEURS["encre2"])
+        if i < len(ligne) - 1:
+            d.fil((x, ys), (x + INTERVALLE, ys))
+            d.separateur(x + INTERVALLE / 2, ym - 0.55, ys + haut - 0.3)
+            x += INTERVALLE
+    # fin de ligne : borne de sortie, ou renvoi vers la ligne suivante
+    if r == nb_lignes - 1:
+        d.fil((x, ys), (x_fin, ys))
+        d.borne(x_fin, ys)
+        d.borne(x_fin, ym)
+        d.tension(x_fin - 0.32, ym, ys, "$V_s$", gauche=True)
+        d.fil((x_masse, ym), (x_fin, ym))
+    else:
+        d.fil((x, ys), (largeur - 1.6, ys))
+        d.renvoi(largeur - 1.6, ys, LETTRES_RENVOIS[r % 26])
+        d.fil((x_masse, ym), (largeur - 1.0, ym))
 
 
 # ---- blocs du bas : brochage du µA741, nomenclature, notes ----------------------
@@ -1719,6 +1811,116 @@ def _nom_tex(nom: str) -> str:
     return f"{nom[0]}_{{{nom[1:]}}}" if len(nom) > 1 else nom
 
 
+class _Redaction:
+    """Rédaction des étapes du calcul : les blocs, dans l'ordre, et de quoi écrire chaque
+    résultat comme sur une copie (formule littérale, application numérique, résultat encadré).
+    Les nombres sont donnés en couples (texte simple, syntaxe mathématique)."""
+
+    def __init__(self, res: mt.Resultat):
+        self.res = res
+        self.blocs: List[Bloc] = []
+        # Fréquences dans les applications numériques : en hertz (comme on l'écrit à la main)
+        # tant qu'elles restent lisibles, sinon avec un préfixe (kHz, MHz).
+        g = res.gabarit
+        self.en_hertz = max(getattr(g, nom) for nom in mt.FREQUENCES[g.type]) < 1e5
+
+    # ----- blocs ------------------------------------------------------------------------
+    def etape(self, numero: int, titre: str) -> None:
+        self.blocs.append(Bloc("etape", titre, numero=numero))
+
+    def question(self, titre: str) -> None:
+        self.blocs.append(Bloc("question", titre))
+
+    def texte(self, phrase: str) -> None:
+        self.blocs.append(Bloc("texte", phrase))
+
+    def formule(self, tex: str, simple: str) -> None:
+        self.blocs.append(Bloc("formule", simple, tex))
+
+    def encadre(self, tex: str, simple: str) -> None:
+        """Résultat encadré ; plusieurs lignes séparées par « \\n » tiennent dans le même cadre."""
+        self.blocs.append(Bloc("resultat", simple, tex))
+
+    def detail(self, phrase: str) -> None:
+        self.blocs.append(Bloc("detail", phrase))
+
+    def an(self, simple: str, tex: str) -> None:
+        """Application numérique écrite telle quelle (sans formule littérale ni cadre)."""
+        self.blocs.append(Bloc("an", simple, tex))
+
+    def calcul(self, symbole: Tuple[str, str], litterale: Tuple[str, str], numerique: Optional[Tuple[str, str]],
+               valeur: Tuple[str, str], approche: bool = True, retenu: bool = True) -> None:
+        """Un résultat rédigé comme sur une copie. Chaque argument est un couple (texte simple,
+        syntaxe mathématique) : la formule littérale, l'application numérique, puis le résultat
+        encadré avec sa formule. retenu=False : valeur intermédiaire, écrite au bout de l'A.N.
+        sans cadre."""
+        (s, s_tex), (l, l_tex), (v, v_tex) = symbole, litterale, valeur
+        egal, egal_tex = ("≈", r"\approx") if approche else ("=", "=")
+        self.formule(f"{s_tex} = {l_tex}", f"{s} = {l}")
+        if numerique is not None:
+            n_, n_tex = numerique
+            fin, fin_tex = ("", "") if retenu else (f" {egal} {v}", f" {egal_tex} {v_tex}")
+            self.an(f"{s} = {n_}{fin}", f"{s_tex} = {n_tex}{fin_tex}")
+        if retenu:
+            self.encadre(f"{s_tex} = {l_tex} {egal_tex} {v_tex}", f"{s} = {l} {egal} {v}")
+
+    def tableau_composants(self, etages: List[mt.Etage], nom: str) -> None:
+        """Tableau récapitulatif : une ligne par cellule, ses résistances puis ses condensateurs
+        (repères du montage réel)."""
+        self.blocs.append(Bloc("entete", "Cellule\tMontage\tRésistances\tCondensateurs", tableau=nom))
+        for e in etages:
+            self.blocs.append(Bloc("ligne", "\t".join([e.montage.cellule.nom, e.montage.libelle,
+                                                        e.liste("R") or "—", e.liste("C") or "—"]), tableau=nom))
+
+    def controles(self, points: List[mt.PointControle]) -> None:
+        """Gain obtenu à chaque fréquence limite du gabarit, comparé à sa limite."""
+        for p_ in points:
+            signe = "≥" if p_.passante else "≤"
+            self.blocs.append(Bloc("controle", f"G({p_.nom}) = {mt.fmt_nombre(p_.G, 4)} dB  {signe}  "
+                                               f"{mt.fmt_compact(p_.limite)} dB", ok=p_.ok))
+
+    # ----- nombres : (texte simple, syntaxe mathématique) --------------------------------
+    @staticmethod
+    def nombre(x: float, chiffres: int = 4) -> Tuple[str, str]:
+        s = mt.fmt_nombre(x, chiffres)
+        return s, _tex(s)
+
+    @staticmethod
+    def decimales(x: float) -> Tuple[str, str]:
+        s = mt.fmt_decimales(x)
+        return s, _tex(s)
+
+    @staticmethod
+    def si(x: float, unite: str) -> Tuple[str, str]:
+        return mt.fmt_si(x, unite), _tex_si(x, unite)
+
+    @staticmethod
+    def pulsation(w: float) -> Tuple[str, str]:
+        return mt.fmt_sci(w, 4) + " rad/s", mt.fmt_sci(w, 4, "tex") + r"\ \mathrm{rad/s}"
+
+    # Valeurs reprises dans une application numérique : 6 chiffres significatifs, pour que
+    # le calcul refait à la main tombe sur le résultat encadré (arrondi, lui, à 4 chiffres).
+    @staticmethod
+    def precis(x: float) -> Tuple[str, str]:
+        s = mt.fmt_compact(x, 6)
+        return s, _tex(s)
+
+    @staticmethod
+    def precis_si(x: float, unite: str) -> Tuple[str, str]:
+        return mt.fmt_si(x, unite, 6, compact=True), _tex_si(x, unite, 6, compact=True)
+
+    @staticmethod
+    def precis_puls(w: float) -> Tuple[str, str]:
+        return mt.fmt_sci(w, 6) + " rad/s", mt.fmt_sci(w, 6, "tex") + r"\ \mathrm{rad/s}"
+
+    def hz(self, x: float) -> Tuple[str, str]:
+        """(texte, tex) d'une fréquence saisie."""
+        if self.en_hertz:
+            s = mt.fmt_compact(x, 6)
+            return s, _tex(s)
+        return mt.fmt_si(x, "Hz", 6, compact=True), _tex_si(x, "Hz", 6, compact=True)
+
+
 def etapes_du_calcul(res: mt.Resultat, choix: Optional[mt.ChoixSeries] = None, pont: bool = False) -> List[Bloc]:
     """Les six étapes de la synthèse, rédigées comme une copie de devoir : pour chaque
     résultat, la formule littérale, l'application numérique (A.N.), puis le résultat encadré
@@ -1735,523 +1937,567 @@ def etapes_du_calcul(res: mt.Resultat, choix: Optional[mt.ChoixSeries] = None, p
     puis, si une série est choisie, la normalisation des valeurs (paragraphe à part), et la
     vérification du gabarit.
     """
-    g, nm = res.gabarit, res.norm
+    r = _Redaction(res)
+    _introduction(r)
+    f0 = _etape1_normalisation(r)
+    _etape2_butterworth(r)
+    _etape3_ordre(r)
+    _etape4_prototype(r)
+    w, w_tex = _etape5_fonction_reelle(r, f0)
+    _etape6_composants(r, choix, pont, w, w_tex)
+    _verification(r, choix)
+    return r.blocs
+
+
+def _introduction(r: _Redaction) -> None:
+    """Données (le gabarit) et ce qu'on cherche."""
+    g = r.res.gabarit
     t = g.type
-    blocs: List[Bloc] = []
+    r.blocs.append(Bloc("donnees", f"{mt.NOMS_TYPES[t]} : {mt.resume_gabarit(g)}"))
+    r.texte("On cherche l'ordre minimal du filtre et sa fonction de transfert"
+            + ("." if t == "CB" else ", puis les valeurs des composants de ses cellules."))
+    r.detail("Les applications numériques gardent 6 chiffres significatifs ; les résultats encadrés sont "
+             "arrondis (4 chiffres significatifs, 4 décimales pour les coefficients m et q).")
 
-    def etape(numero: int, titre: str) -> None:
-        blocs.append(Bloc("etape", titre, numero=numero))
 
-    def question(titre: str) -> None:
-        blocs.append(Bloc("question", titre))
-
-    def texte(phrase: str) -> None:
-        blocs.append(Bloc("texte", phrase))
-
-    def formule(tex: str, simple: str) -> None:
-        blocs.append(Bloc("formule", simple, tex))
-
-    def encadre(tex: str, simple: str) -> None:
-        """Résultat encadré ; plusieurs lignes séparées par « \\n » tiennent dans le même cadre."""
-        blocs.append(Bloc("resultat", simple, tex))
-
-    def detail(phrase: str) -> None:
-        blocs.append(Bloc("detail", phrase))
-
-    def calcul(symbole: Tuple[str, str], litterale: Tuple[str, str], numerique: Optional[Tuple[str, str]],
-               valeur: Tuple[str, str], approche: bool = True, retenu: bool = True) -> None:
-        """Un résultat rédigé comme sur une copie. Chaque argument est un couple (texte simple,
-        syntaxe mathématique) : la formule littérale, l'application numérique, puis le résultat
-        encadré avec sa formule. retenu=False : valeur intermédiaire, écrite au bout de l'A.N.
-        sans cadre."""
-        (s, s_tex), (l, l_tex), (v, v_tex) = symbole, litterale, valeur
-        egal, egal_tex = ("≈", r"\approx") if approche else ("=", "=")
-        formule(f"{s_tex} = {l_tex}", f"{s} = {l}")
-        if numerique is not None:
-            n_, n_tex = numerique
-            fin, fin_tex = ("", "") if retenu else (f" {egal} {v}", f" {egal_tex} {v_tex}")
-            blocs.append(Bloc("an", f"{s} = {n_}{fin}", f"{s_tex} = {n_tex}{fin_tex}"))
-        if retenu:
-            encadre(f"{s_tex} = {l_tex} {egal_tex} {v_tex}", f"{s} = {l} {egal} {v}")
-
-    def nombre(x: float, chiffres: int = 4) -> Tuple[str, str]:
-        s = mt.fmt_nombre(x, chiffres)
-        return s, _tex(s)
-
-    def decimales(x: float) -> Tuple[str, str]:
-        s = mt.fmt_decimales(x)
-        return s, _tex(s)
-
-    def si(x: float, unite: str) -> Tuple[str, str]:
-        return mt.fmt_si(x, unite), _tex_si(x, unite)
-
-    def pulsation(w: float) -> Tuple[str, str]:
-        return mt.fmt_sci(w, 4) + " rad/s", mt.fmt_sci(w, 4, "tex") + r"\ \mathrm{rad/s}"
-
-    # Valeurs reprises dans une application numérique : 6 chiffres significatifs, pour que
-    # le calcul refait à la main tombe sur le résultat encadré (arrondi, lui, à 4 chiffres).
-    def precis(x: float) -> Tuple[str, str]:
-        s = mt.fmt_compact(x, 6)
-        return s, _tex(s)
-
-    def precis_si(x: float, unite: str) -> Tuple[str, str]:
-        return mt.fmt_si(x, unite, 6, compact=True), _tex_si(x, unite, 6, compact=True)
-
-    def precis_puls(w: float) -> Tuple[str, str]:
-        return mt.fmt_sci(w, 6) + " rad/s", mt.fmt_sci(w, 6, "tex") + r"\ \mathrm{rad/s}"
-
-    def tableau_composants(etages: List[mt.Etage], nom: str) -> None:
-        """Tableau récapitulatif : une ligne par cellule, ses résistances puis ses condensateurs
-        (repères du montage réel)."""
-        blocs.append(Bloc("entete", "Cellule\tMontage\tRésistances\tCondensateurs", tableau=nom))
-        for e in etages:
-            blocs.append(Bloc("ligne", "\t".join([e.montage.cellule.nom, e.montage.libelle,
-                                                   e.liste("R") or "—", e.liste("C") or "—"]), tableau=nom))
-
-    # Fréquences dans les applications numériques : en hertz (comme on l'écrit à la main)
-    # tant qu'elles restent lisibles, sinon avec un préfixe (kHz, MHz).
-    frequences = [getattr(g, nom) for nom in mt.FREQUENCES[t]]
-    en_hertz = max(frequences) < 1e5
-
-    def hz(x: float) -> Tuple[str, str]:
-        """(texte, tex) d'une fréquence saisie."""
-        if en_hertz:
-            s = mt.fmt_compact(x, 6)
-            return s, _tex(s)
-        return mt.fmt_si(x, "Hz", 6, compact=True), _tex_si(x, "Hz", 6, compact=True)
-
-    k_val, inv_val = nombre(nm.k), nombre(1 / nm.k)
-    blocs.append(Bloc("donnees", f"{mt.NOMS_TYPES[t]} : {mt.resume_gabarit(g)}"))
-    texte("On cherche l'ordre minimal du filtre et sa fonction de transfert"
-          + ("." if t == "CB" else ", puis les valeurs des composants de ses cellules."))
-    detail("Les applications numériques gardent 6 chiffres significatifs ; les résultats encadrés sont "
-           "arrondis (4 chiffres significatifs, 4 décimales pour les coefficients m et q).")
-
-    # ----- Étape 1 -----------------------------------------------------------
-    etape(1, "Normalisation du gabarit")
-    if t in ("PB", "PH"):
-        haut, bas = ("fp", "fa") if t == "PB" else ("fa", "fp")
-        (a, a_tex), (b, b_tex) = hz(getattr(g, haut)), hz(getattr(g, bas))
-        reduite = "Ω = ω/ωp" if t == "PB" else "Ω = ωp/ω, qui inverse l'axe des fréquences"
-        texte(f"On rapporte la pulsation à ωp = 2π·fp ({reduite}) : la bande passante s'arrête en "
-              "Ω = 1 et la bande atténuée commence en Ω = 1/k.")
-        question("a) Coefficient de sélectivité")
-        calcul(("k", "k"), (f"{haut}/{bas}", r"\dfrac{f_{%s}}{f_{%s}}" % (haut[1], bas[1])),
-               (f"{a}/{b}", r"\dfrac{%s}{%s}" % (a_tex, b_tex)), k_val, _approche(nm.k))
-        question("b) Début réduit de la bande atténuée")
-        calcul(("1/k", r"\dfrac{1}{k}"), (f"{bas}/{haut}", r"\dfrac{f_{%s}}{f_{%s}}" % (bas[1], haut[1])),
-               (f"{b}/{a}", r"\dfrac{%s}{%s}" % (b_tex, a_tex)), inv_val, _approche(1 / nm.k))
-        f0_n = f0_t = ""
+def _etape1_normalisation(r: _Redaction) -> Tuple[str, str]:
+    """Étape 1 : k et 1/k, précédés de f0 et B pour un filtre de bande. Renvoie f0 tel qu'il
+    s'écrit dans les applications numériques (vide pour un passe-bas ou un passe-haut)."""
+    r.etape(1, "Normalisation du gabarit")
+    if r.res.gabarit.type in ("PB", "PH"):
+        _normalisation_pb_ph(r)
+        f0 = ("", "")
     else:
-        (fpm, fpm_t), (fpp, fpp_t) = hz(g.fp_moins), hz(g.fp_plus)
-        (fam, fam_t), (fap, fap_t) = hz(g.fa_moins), hz(g.fa_plus)
-        texte("On centre le gabarit sur f0, moyenne géométrique des limites de la bande passante, et on "
-              "mesure sa largeur par la bande relative B.")
-        question("a) Fréquence centrale")
-        calcul(("f0", "f_0"), ("√(fp+·fp−)", r"\sqrt{f_{p+}\,f_{p-}}"),
-               (f"√({fpp} × {fpm})", r"\sqrt{%s \times %s}" % (fpp_t, fpm_t)), si(nm.f_ref, "Hz"),
-               _approche(nm.f_ref))
-        f0_n, f0_t = precis(nm.f_ref) if en_hertz else precis_si(nm.f_ref, "Hz")
-        B_val = nombre(nm.B)
-        B_an = precis(nm.B)
-        question("b) Largeur de bande relative")
-        calcul(("B", "B"), ("(fp+ − fp−)/f0", r"\dfrac{f_{p+} - f_{p-}}{f_0}"),
-               (f"({fpp} − {fpm})/{f0_n}", r"\dfrac{%s - %s}{%s}" % (fpp_t, fpm_t, f0_t)), B_val,
-               _approche(nm.B))
-        passe = (("(fp+ − fp−)", r"f_{p+} - f_{p-}"), (f"({fpp} − {fpm})", f"{fpp_t} - {fpm_t}"))
-        attenue = (("(fa+ − fa−)", r"f_{a+} - f_{a-}"), (f"({fap} − {fam})", f"{fap_t} - {fam_t}"))
-        if nm.symetrique:
-            haut_, bas_ = (passe, attenue) if t == "PM" else (attenue, passe)
-            question("c) Coefficient de sélectivité")
-            texte("Il compare la largeur de la bande passante à celle de la bande atténuée :" if t == "PM" else
-                  "Il compare la largeur de la bande rejetée à celle de la bande passante :")
+        f0 = _normalisation_bande(r)
+    r.detail("Gabarit réduit (Bode normalisé) : G ≥ Gp jusqu'à Ω = 1, G ≤ Ga à partir de Ω = 1/k.")
+    return f0
 
-            def rapport(dessus, dessous) -> Tuple[Tuple[str, str], Tuple[str, str]]:
-                (l1, l1_t), (n1, n1_t) = dessus
-                (l2, l2_t), (n2, n2_t) = dessous
-                return ((f"{l1}/{l2}", r"\dfrac{%s}{%s}" % (l1_t, l2_t)),
-                        (f"{n1}/{n2}", r"\dfrac{%s}{%s}" % (n1_t, n2_t)))
-            calcul(("k", "k"), *rapport(haut_, bas_), k_val, _approche(nm.k))
-            question("d) Début réduit de la bande atténuée")
-            calcul(("1/k", r"\dfrac{1}{k}"), *rapport(bas_, haut_), inv_val, _approche(1 / nm.k))
-        else:
-            texte(f"Le gabarit n'est pas symétrique : √(fa+·fa−) = {mt.fmt_si(nm.f0_attenuation, 'Hz')} diffère "
-                  "de f0. On calcule la pulsation réduite atteinte en fa− et en fa+, et on garde la plus "
-                  "contraignante.")
-            f0, B = nm.f_ref, nm.B
-            B_t = B_an[1]
-            if t == "PM":
-                om_m = (f0 / g.fa_moins - g.fa_moins / f0) / B
-                om_p = (g.fa_plus / f0 - f0 / g.fa_plus) / B
-                lit_m = ("(f0/fa− − fa−/f0)/B", r"\dfrac{1}{B}\left(\dfrac{f_0}{f_{a-}} - \dfrac{f_{a-}}{f_0}\right)")
-                num_m = (f"({f0_n}/{fam} − {fam}/{f0_n})/{B_an[0]}",
-                         r"\dfrac{1}{%s}\left(\dfrac{%s}{%s} - \dfrac{%s}{%s}\right)" % (B_t, f0_t, fam_t, fam_t, f0_t))
-                lit_p = ("(fa+/f0 − f0/fa+)/B", r"\dfrac{1}{B}\left(\dfrac{f_{a+}}{f_0} - \dfrac{f_0}{f_{a+}}\right)")
-                num_p = (f"({fap}/{f0_n} − {f0_n}/{fap})/{B_an[0]}",
-                         r"\dfrac{1}{%s}\left(\dfrac{%s}{%s} - \dfrac{%s}{%s}\right)" % (B_t, fap_t, f0_t, f0_t, fap_t))
-            else:
-                om_m = B / (f0 / g.fa_moins - g.fa_moins / f0)
-                om_p = B / (g.fa_plus / f0 - f0 / g.fa_plus)
-                lit_m = ("B/(f0/fa− − fa−/f0)", r"\dfrac{B}{\dfrac{f_0}{f_{a-}} - \dfrac{f_{a-}}{f_0}}")
-                num_m = (f"{B_an[0]}/({f0_n}/{fam} − {fam}/{f0_n})",
-                         r"\dfrac{%s}{\dfrac{%s}{%s} - \dfrac{%s}{%s}}" % (B_t, f0_t, fam_t, fam_t, f0_t))
-                lit_p = ("B/(fa+/f0 − f0/fa+)", r"\dfrac{B}{\dfrac{f_{a+}}{f_0} - \dfrac{f_0}{f_{a+}}}")
-                num_p = (f"{B_an[0]}/({fap}/{f0_n} − {f0_n}/{fap})",
-                         r"\dfrac{%s}{\dfrac{%s}{%s} - \dfrac{%s}{%s}}" % (B_t, fap_t, f0_t, f0_t, fap_t))
-            question("c) Pulsations réduites aux limites de la bande atténuée")
-            calcul(("Ω(fa−)", r"\Omega(f_{a-})"), lit_m, num_m, nombre(om_m), _approche(om_m))
-            calcul(("Ω(fa+)", r"\Omega(f_{a+})"), lit_p, num_p, nombre(om_p), _approche(om_p))
-            mini = min(om_m, om_p)
-            question("d) Coefficient de sélectivité")
-            calcul(("k", "k"), ("1/min(Ω(fa−), Ω(fa+))",
-                                r"\dfrac{1}{\min\left(\Omega(f_{a-}),\,\Omega(f_{a+})\right)}"),
-                   (f"1/{precis(mini)[0]}", r"\dfrac{1}{%s}" % precis(mini)[1]), k_val, _approche(nm.k))
-            encadre(r"\dfrac{1}{k} = \min\left(\Omega(f_{a-}),\,\Omega(f_{a+})\right) %s %s"
-                    % (r"\approx" if _approche(mini) else "=", inv_val[1]),
-                    f"1/k = min(Ω(fa−), Ω(fa+)) {'≈' if _approche(mini) else '='} {inv_val[0]}")
-    detail("Gabarit réduit (Bode normalisé) : G ≥ Gp jusqu'à Ω = 1, G ≤ Ga à partir de Ω = 1/k.")
 
-    # ----- Étape 2 -----------------------------------------------------------
-    etape(2, "Approximation de Butterworth")
-    texte("Le gain du prototype passe-bas d'ordre n est le plus plat possible dans la bande passante :")
-    formule(r"|H(j\Omega)|^2 = \dfrac{1}{1 + \varepsilon^2\,\Omega^{2n}},\qquad "
-            r"G(\Omega) = -10\,\log\left(1 + \varepsilon^2\,\Omega^{2n}\right)",
-            "|H(jΩ)|² = 1 / (1 + ε²·Ω²ⁿ)   G(Ω) = −10·log(1 + ε²·Ω²ⁿ)")
+def _normalisation_pb_ph(r: _Redaction) -> None:
+    """Étape 1, passe-bas ou passe-haut : k = fp/fa (ou fa/fp) et 1/k."""
+    g, nm = r.res.gabarit, r.res.norm
+    t = g.type
+    k_val, inv_val = r.nombre(nm.k), r.nombre(1 / nm.k)
+    haut, bas = ("fp", "fa") if t == "PB" else ("fa", "fp")
+    (a, a_tex), (b, b_tex) = r.hz(getattr(g, haut)), r.hz(getattr(g, bas))
+    reduite = "Ω = ω/ωp" if t == "PB" else "Ω = ωp/ω, qui inverse l'axe des fréquences"
+    r.texte(f"On rapporte la pulsation à ωp = 2π·fp ({reduite}) : la bande passante s'arrête en "
+            "Ω = 1 et la bande atténuée commence en Ω = 1/k.")
+    r.question("a) Coefficient de sélectivité")
+    r.calcul(("k", "k"), (f"{haut}/{bas}", r"\dfrac{f_{%s}}{f_{%s}}" % (haut[1], bas[1])),
+             (f"{a}/{b}", r"\dfrac{%s}{%s}" % (a_tex, b_tex)), k_val, _approche(nm.k))
+    r.question("b) Début réduit de la bande atténuée")
+    r.calcul(("1/k", r"\dfrac{1}{k}"), (f"{bas}/{haut}", r"\dfrac{f_{%s}}{f_{%s}}" % (bas[1], haut[1])),
+             (f"{b}/{a}", r"\dfrac{%s}{%s}" % (b_tex, a_tex)), inv_val, _approche(1 / nm.k))
+
+
+def _normalisation_bande(r: _Redaction) -> Tuple[str, str]:
+    """Étape 1, passe-bande ou coupe-bande : f0, B, puis la sélectivité. Renvoie f0 tel qu'il
+    s'écrit dans les applications numériques."""
+    g, nm = r.res.gabarit, r.res.norm
+    fp_moins, fp_plus = r.hz(g.fp_moins), r.hz(g.fp_plus)
+    (fpm, fpm_t), (fpp, fpp_t) = fp_moins, fp_plus
+    r.texte("On centre le gabarit sur f0, moyenne géométrique des limites de la bande passante, et on "
+            "mesure sa largeur par la bande relative B.")
+    r.question("a) Fréquence centrale")
+    r.calcul(("f0", "f_0"), ("√(fp+·fp−)", r"\sqrt{f_{p+}\,f_{p-}}"),
+             (f"√({fpp} × {fpm})", r"\sqrt{%s \times %s}" % (fpp_t, fpm_t)), r.si(nm.f_ref, "Hz"),
+             _approche(nm.f_ref))
+    f0 = r.precis(nm.f_ref) if r.en_hertz else r.precis_si(nm.f_ref, "Hz")
+    r.question("b) Largeur de bande relative")
+    r.calcul(("B", "B"), ("(fp+ − fp−)/f0", r"\dfrac{f_{p+} - f_{p-}}{f_0}"),
+             (f"({fpp} − {fpm})/{f0[0]}", r"\dfrac{%s - %s}{%s}" % (fpp_t, fpm_t, f0[1])), r.nombre(nm.B),
+             _approche(nm.B))
+    if nm.symetrique:
+        _selectivite_symetrique(r, fp_moins, fp_plus)
+    else:
+        _selectivite_asymetrique(r, f0)
+    return f0
+
+
+def _rapport_largeurs(dessus, dessous) -> Tuple[Tuple[str, str], Tuple[str, str]]:
+    """Quotient de deux largeurs de bande : formule littérale et application numérique."""
+    (l1, l1_t), (n1, n1_t) = dessus
+    (l2, l2_t), (n2, n2_t) = dessous
+    return ((f"{l1}/{l2}", r"\dfrac{%s}{%s}" % (l1_t, l2_t)),
+            (f"{n1}/{n2}", r"\dfrac{%s}{%s}" % (n1_t, n2_t)))
+
+
+def _selectivite_symetrique(r: _Redaction, fp_moins: Tuple[str, str], fp_plus: Tuple[str, str]) -> None:
+    """Étape 1, gabarit de bande symétrique : k compare les largeurs des deux bandes."""
+    g, nm = r.res.gabarit, r.res.norm
+    t = g.type
+    (fpm, fpm_t), (fpp, fpp_t) = fp_moins, fp_plus
+    (fam, fam_t), (fap, fap_t) = r.hz(g.fa_moins), r.hz(g.fa_plus)
+    passe = (("(fp+ − fp−)", r"f_{p+} - f_{p-}"), (f"({fpp} − {fpm})", f"{fpp_t} - {fpm_t}"))
+    attenue = (("(fa+ − fa−)", r"f_{a+} - f_{a-}"), (f"({fap} − {fam})", f"{fap_t} - {fam_t}"))
+    haut_, bas_ = (passe, attenue) if t == "PM" else (attenue, passe)
+    r.question("c) Coefficient de sélectivité")
+    r.texte("Il compare la largeur de la bande passante à celle de la bande atténuée :" if t == "PM" else
+            "Il compare la largeur de la bande rejetée à celle de la bande passante :")
+    r.calcul(("k", "k"), *_rapport_largeurs(haut_, bas_), r.nombre(nm.k), _approche(nm.k))
+    r.question("d) Début réduit de la bande atténuée")
+    r.calcul(("1/k", r"\dfrac{1}{k}"), *_rapport_largeurs(bas_, haut_), r.nombre(1 / nm.k), _approche(1 / nm.k))
+
+
+def _selectivite_asymetrique(r: _Redaction, f0_an: Tuple[str, str]) -> None:
+    """Étape 1, gabarit de bande non symétrique : pulsation réduite en fa− et en fa+, puis k
+    d'après la plus contraignante."""
+    g, nm = r.res.gabarit, r.res.norm
+    t = g.type
+    f0_n, f0_t = f0_an
+    (fam, fam_t), (fap, fap_t) = r.hz(g.fa_moins), r.hz(g.fa_plus)
+    B_an = r.precis(nm.B)
+    r.texte(f"Le gabarit n'est pas symétrique : √(fa+·fa−) = {mt.fmt_si(nm.f0_attenuation, 'Hz')} diffère "
+            "de f0. On calcule la pulsation réduite atteinte en fa− et en fa+, et on garde la plus "
+            "contraignante.")
+    f0, B = nm.f_ref, nm.B
+    B_t = B_an[1]
+    if t == "PM":
+        om_m = (f0 / g.fa_moins - g.fa_moins / f0) / B
+        om_p = (g.fa_plus / f0 - f0 / g.fa_plus) / B
+        lit_m = ("(f0/fa− − fa−/f0)/B", r"\dfrac{1}{B}\left(\dfrac{f_0}{f_{a-}} - \dfrac{f_{a-}}{f_0}\right)")
+        num_m = (f"({f0_n}/{fam} − {fam}/{f0_n})/{B_an[0]}",
+                 r"\dfrac{1}{%s}\left(\dfrac{%s}{%s} - \dfrac{%s}{%s}\right)" % (B_t, f0_t, fam_t, fam_t, f0_t))
+        lit_p = ("(fa+/f0 − f0/fa+)/B", r"\dfrac{1}{B}\left(\dfrac{f_{a+}}{f_0} - \dfrac{f_0}{f_{a+}}\right)")
+        num_p = (f"({fap}/{f0_n} − {f0_n}/{fap})/{B_an[0]}",
+                 r"\dfrac{1}{%s}\left(\dfrac{%s}{%s} - \dfrac{%s}{%s}\right)" % (B_t, fap_t, f0_t, f0_t, fap_t))
+    else:
+        om_m = B / (f0 / g.fa_moins - g.fa_moins / f0)
+        om_p = B / (g.fa_plus / f0 - f0 / g.fa_plus)
+        lit_m = ("B/(f0/fa− − fa−/f0)", r"\dfrac{B}{\dfrac{f_0}{f_{a-}} - \dfrac{f_{a-}}{f_0}}")
+        num_m = (f"{B_an[0]}/({f0_n}/{fam} − {fam}/{f0_n})",
+                 r"\dfrac{%s}{\dfrac{%s}{%s} - \dfrac{%s}{%s}}" % (B_t, f0_t, fam_t, fam_t, f0_t))
+        lit_p = ("B/(fa+/f0 − f0/fa+)", r"\dfrac{B}{\dfrac{f_{a+}}{f_0} - \dfrac{f_0}{f_{a+}}}")
+        num_p = (f"{B_an[0]}/({fap}/{f0_n} − {f0_n}/{fap})",
+                 r"\dfrac{%s}{\dfrac{%s}{%s} - \dfrac{%s}{%s}}" % (B_t, fap_t, f0_t, f0_t, fap_t))
+    r.question("c) Pulsations réduites aux limites de la bande atténuée")
+    r.calcul(("Ω(fa−)", r"\Omega(f_{a-})"), lit_m, num_m, r.nombre(om_m), _approche(om_m))
+    r.calcul(("Ω(fa+)", r"\Omega(f_{a+})"), lit_p, num_p, r.nombre(om_p), _approche(om_p))
+    mini = min(om_m, om_p)
+    inv_val = r.nombre(1 / nm.k)
+    r.question("d) Coefficient de sélectivité")
+    r.calcul(("k", "k"), ("1/min(Ω(fa−), Ω(fa+))",
+                          r"\dfrac{1}{\min\left(\Omega(f_{a-}),\,\Omega(f_{a+})\right)}"),
+             (f"1/{r.precis(mini)[0]}", r"\dfrac{1}{%s}" % r.precis(mini)[1]), r.nombre(nm.k), _approche(nm.k))
+    r.encadre(r"\dfrac{1}{k} = \min\left(\Omega(f_{a-}),\,\Omega(f_{a+})\right) %s %s"
+              % (r"\approx" if _approche(mini) else "=", inv_val[1]),
+              f"1/k = min(Ω(fa−), Ω(fa+)) {'≈' if _approche(mini) else '='} {inv_val[0]}")
+
+
+def _etape2_butterworth(r: _Redaction) -> None:
+    """Étape 2 : gain du prototype de Butterworth et ondulation ε."""
+    g, res = r.res.gabarit, r.res
+    r.etape(2, "Approximation de Butterworth")
+    r.texte("Le gain du prototype passe-bas d'ordre n est le plus plat possible dans la bande passante :")
+    r.formule(r"|H(j\Omega)|^2 = \dfrac{1}{1 + \varepsilon^2\,\Omega^{2n}},\qquad "
+              r"G(\Omega) = -10\,\log\left(1 + \varepsilon^2\,\Omega^{2n}\right)",
+              "|H(jΩ)|² = 1 / (1 + ε²·Ω²ⁿ)   G(Ω) = −10·log(1 + ε²·Ω²ⁿ)")
     gp10 = mt.fmt_compact(-g.Gp / 10)
     eps_calcule = math.sqrt(10 ** (-g.Gp / 10) - 1)
-    texte("En Ω = 1, le gain doit valoir Gp : 1 + ε² = 10^(−Gp/10), ce qui fixe l'ondulation ε :")
+    r.texte("En Ω = 1, le gain doit valoir Gp : 1 + ε² = 10^(−Gp/10), ce qui fixe l'ondulation ε :")
     lit_eps = ("√(10^(−Gp/10) − 1)", r"\sqrt{10^{-G_p/10} - 1}")
     num_eps = (f"√(10^{gp10} − 1)", r"\sqrt{10^{%s} - 1}" % _tex(gp10))
     if res.eps_convention:
-        calcul(("ε", r"\varepsilon"), lit_eps, num_eps, nombre(eps_calcule), _approche(eps_calcule), retenu=False)
-        texte("Gp = −3 dB donne ε ≈ 1 : on prend ε = 1, et la coupure à −3 dB du prototype tombe "
-              "exactement en Ω = 1.")
-        encadre(r"\varepsilon = 1", "ε = 1")
+        r.calcul(("ε", r"\varepsilon"), lit_eps, num_eps, r.nombre(eps_calcule), _approche(eps_calcule),
+                 retenu=False)
+        r.texte("Gp = −3 dB donne ε ≈ 1 : on prend ε = 1, et la coupure à −3 dB du prototype tombe "
+                "exactement en Ω = 1.")
+        r.encadre(r"\varepsilon = 1", "ε = 1")
     else:
-        calcul(("ε", r"\varepsilon"), lit_eps, num_eps, nombre(eps_calcule), _approche(eps_calcule))
+        r.calcul(("ε", r"\varepsilon"), lit_eps, num_eps, r.nombre(eps_calcule), _approche(eps_calcule))
 
-    # ----- Étape 3 -----------------------------------------------------------
-    etape(3, "Ordre minimal")
-    texte("Le gabarit impose aussi G(1/k) ≤ Ga, soit 1 + ε²·(1/k)²ⁿ ≥ 10^(−Ga/10). En prenant le "
-          "logarithme, avec ε² = 10^(−Gp/10) − 1, l'ordre n doit vérifier :")
-    formule(r"n \geq \dfrac{\log\left(10^{-G_a/10} - 1\right) - \log\left(10^{-G_p/10} - 1\right)}"
-            r"{2\,\log(1/k)}",
-            "n ≥ [log(10^(−Ga/10) − 1) − log(10^(−Gp/10) − 1)] / [2·log(1/k)]")
+
+def _etape3_ordre(r: _Redaction) -> None:
+    """Étape 3 : ordre minimal n (et N = 2n pour un filtre de bande, Ωc si ε ≠ 1)."""
+    res = r.res
+    g, nm = res.gabarit, res.norm
+    t = g.type
+    r.etape(3, "Ordre minimal")
+    r.texte("Le gabarit impose aussi G(1/k) ≤ Ga, soit 1 + ε²·(1/k)²ⁿ ≥ 10^(−Ga/10). En prenant le "
+            "logarithme, avec ε² = 10^(−Gp/10) − 1, l'ordre n doit vérifier :")
+    r.formule(r"n \geq \dfrac{\log\left(10^{-G_a/10} - 1\right) - \log\left(10^{-G_p/10} - 1\right)}"
+              r"{2\,\log(1/k)}",
+              "n ≥ [log(10^(−Ga/10) − 1) − log(10^(−Gp/10) − 1)] / [2·log(1/k)]")
+    gp10 = mt.fmt_compact(-g.Gp / 10)
     ga10 = mt.fmt_compact(-g.Ga / 10)
     numerateur = math.log10(10 ** (-g.Ga / 10) - 1) - math.log10(10 ** (-g.Gp / 10) - 1)
     denominateur = 2 * math.log10(1 / nm.k)
-    (num, num_t), (den, den_t), (nex, nex_t) = precis(numerateur), precis(denominateur), nombre(res.n_exact)
-    inv_an = precis(1 / nm.k)
-    blocs.append(Bloc("an", f"n ≥ [log(10^{ga10} − 1) − log(10^{gp10} − 1)] / [2·log({inv_an[0]})] = {num}/{den}",
-                      r"n \geq \dfrac{\log\left(10^{%s} - 1\right) - \log\left(10^{%s} - 1\right)}{2\,\log(%s)}"
-                      r" = \dfrac{%s}{%s}" % (_tex(ga10), _tex(gp10), inv_an[1], num_t, den_t)))
-    texte(f"n est l'entier immédiatement supérieur à {nex} :")
-    encadre(r"n \geq %s \;\Rightarrow\; n = %d" % (nex_t, res.n), f"n ≥ {nex}  ⇒  n = {res.n}")
+    (num, num_t), (den, den_t), (nex, nex_t) = r.precis(numerateur), r.precis(denominateur), r.nombre(res.n_exact)
+    inv_an = r.precis(1 / nm.k)
+    r.an(f"n ≥ [log(10^{ga10} − 1) − log(10^{gp10} − 1)] / [2·log({inv_an[0]})] = {num}/{den}",
+         r"n \geq \dfrac{\log\left(10^{%s} - 1\right) - \log\left(10^{%s} - 1\right)}{2\,\log(%s)}"
+         r" = \dfrac{%s}{%s}" % (_tex(ga10), _tex(gp10), inv_an[1], num_t, den_t))
+    r.texte(f"n est l'entier immédiatement supérieur à {nex} :")
+    r.encadre(r"n \geq %s \;\Rightarrow\; n = %d" % (nex_t, res.n), f"n ≥ {nex}  ⇒  n = {res.n}")
     if t in ("PM", "CB"):
-        texte("La transposition donne deux pôles pour chaque pôle du prototype : le filtre réel est d'ordre N = 2n.")
-        encadre(r"N = 2n = %d" % (2 * res.n), f"N = 2n = {2 * res.n}")
+        r.texte("La transposition donne deux pôles pour chaque pôle du prototype : le filtre réel est d'ordre N = 2n.")
+        r.encadre(r"N = 2n = %d" % (2 * res.n), f"N = 2n = {2 * res.n}")
     if not res.eps_convention:
-        texte("Avec ε ≠ 1, la coupure à −3 dB du prototype n'est plus en Ω = 1 mais en :")
-        eps_v = precis(res.eps)
-        calcul(("Ωc", r"\Omega_c"), ("ε^(−1/n)", r"\varepsilon^{-1/n}"),
-               (f"{eps_v[0]}^(−1/{res.n})", r"%s^{-1/%d}" % (eps_v[1], res.n)), nombre(res.omega_c),
-               _approche(res.omega_c))
+        r.texte("Avec ε ≠ 1, la coupure à −3 dB du prototype n'est plus en Ω = 1 mais en :")
+        eps_v = r.precis(res.eps)
+        r.calcul(("Ωc", r"\Omega_c"), ("ε^(−1/n)", r"\varepsilon^{-1/n}"),
+                 (f"{eps_v[0]}^(−1/{res.n})", r"%s^{-1/%d}" % (eps_v[1], res.n)), r.nombre(res.omega_c),
+                 _approche(res.omega_c))
 
-    # ----- Étape 4 -----------------------------------------------------------
-    etape(4, "Fonction de transfert normalisée")
-    texte("Le dénominateur est le polynôme de Butterworth Bn(p) : un facteur p² + 2m·p + 1 par paire de "
-          "pôles, et le facteur (p + 1) si n est impair, avec :")
-    formule(r"B_n(p) = (p+1)\;\prod_k\left(p^2 + 2\,m_k\,p + 1\right),\qquad "
-            r"m_k = \sin\dfrac{(2k-1)\,\pi}{2n}",
-            "Bn(p) = (p + 1)·Π(p² + 2mₖ·p + 1)   avec mₖ = sin((2k − 1)π/2n)")
+
+def _etape4_prototype(r: _Redaction) -> None:
+    """Étape 4 : polynôme de Butterworth, coefficient m de chaque cellule, fonction normalisée."""
+    res = r.res
+    r.etape(4, "Fonction de transfert normalisée")
+    r.texte("Le dénominateur est le polynôme de Butterworth Bn(p) : un facteur p² + 2m·p + 1 par paire de "
+            "pôles, et le facteur (p + 1) si n est impair, avec :")
+    r.formule(r"B_n(p) = (p+1)\;\prod_k\left(p^2 + 2\,m_k\,p + 1\right),\qquad "
+              r"m_k = \sin\dfrac{(2k-1)\,\pi}{2n}",
+              "Bn(p) = (p + 1)·Π(p² + 2mₖ·p + 1)   avec mₖ = sin((2k − 1)π/2n)")
     debut_k = (res.n + 1) // 2 + 1
     valeurs_k = list(range(debut_k, res.n + 1))
     if valeurs_k:
-        texte(f"Pour n = {res.n}, k prend les valeurs entières telles que (n + 1)/2 < k < n + 1/2 : "
-              f"k = {', '.join(map(str, valeurs_k))}.")
+        r.texte(f"Pour n = {res.n}, k prend les valeurs entières telles que (n + 1)/2 < k < n + 1/2 : "
+                f"k = {', '.join(map(str, valeurs_k))}.")
     for i, c in enumerate(res.prototype):
         if c.ordre == 2:
-            kk = debut_k + i
-            angle, angle_tex, degres = _angle(kk, res.n)
-            degres_tex = _tex(degres[:-1]) + r"^{\circ}"
-            m = math.sin(math.pi * (2 * kk - 1) / (2 * res.n))
-            (m_txt, m_t), (dm, dm_t) = decimales(m), decimales(2 * m)
-            egal, egal_tex = ("≈", r"\approx") if _approche_dec(m) else ("=", "=")
-            question(f"Cellule {c.nom} (k = {kk})")
-            blocs.append(Bloc("an", f"m{c.nom} = sin((2×{kk} − 1)π/(2×{res.n})) = sin({angle}) = sin {degres}",
-                              r"m_{%s} = \sin\dfrac{(2\times %d - 1)\,\pi}{2\times %d} = \sin %s = \sin %s"
-                              % (c.nom, kk, res.n, angle_tex, degres_tex)))
-            encadre(r"m_{%s} = \sin %s %s %s \;\Rightarrow\; p^2 + %s\,p + 1" % (c.nom, angle_tex, egal_tex, m_t, dm_t),
-                    f"m{c.nom} = sin({angle}) {egal} {m_txt}  ⇒  p² + {dm}·p + 1")
+            _coefficient_m(r, c, debut_k + i)
         else:
-            texte("n est impair : le polynôme compte aussi le facteur du premier ordre (p + 1).")
+            r.texte("n est impair : le polynôme compte aussi le facteur du premier ordre (p + 1).")
     if not res.eps_convention:
-        detail(f"Avec Ωc = {mt.fmt_nombre(res.omega_c)}, p est remplacé par p/Ωc dans chaque facteur.")
-    texte("D'où la fonction de transfert normalisée :")
+        r.detail(f"Avec Ωc = {mt.fmt_nombre(res.omega_c)}, p est remplacé par p/Ωc dans chaque facteur.")
+    r.texte("D'où la fonction de transfert normalisée :")
     facteurs = mt.facteurs_prototype(res)
     simple = "H(p) = 1 / " + ("[" + "·".join(f"({x})" for x in facteurs) + "]" if len(facteurs) > 1
                               else f"({facteurs[0]})")
-    encadre("\n".join(tex_prototype(res)), simple)
+    r.encadre("\n".join(tex_prototype(res)), simple)
 
-    # ----- Étape 5 -----------------------------------------------------------
-    etape(5, "Fonction de transfert réelle")
+
+def _coefficient_m(r: _Redaction, c: mt.Cellule, kk: int) -> None:
+    """Étape 4, une cellule du second ordre : mₖ = sin((2k − 1)π/2n) et son facteur."""
+    n = r.res.n
+    angle, angle_tex, degres = _angle(kk, n)
+    degres_tex = _tex(degres[:-1]) + r"^{\circ}"
+    m = math.sin(math.pi * (2 * kk - 1) / (2 * n))
+    (m_txt, m_t), (dm, dm_t) = r.decimales(m), r.decimales(2 * m)
+    egal, egal_tex = ("≈", r"\approx") if _approche_dec(m) else ("=", "=")
+    r.question(f"Cellule {c.nom} (k = {kk})")
+    r.an(f"m{c.nom} = sin((2×{kk} − 1)π/(2×{n})) = sin({angle}) = sin {degres}",
+         r"m_{%s} = \sin\dfrac{(2\times %d - 1)\,\pi}{2\times %d} = \sin %s = \sin %s"
+         % (c.nom, kk, n, angle_tex, degres_tex))
+    r.encadre(r"m_{%s} = \sin %s %s %s \;\Rightarrow\; p^2 + %s\,p + 1" % (c.nom, angle_tex, egal_tex, m_t, dm_t),
+              f"m{c.nom} = sin({angle}) {egal} {m_txt}  ⇒  p² + {dm}·p + 1")
+
+
+def _etape5_fonction_reelle(r: _Redaction, f0: Tuple[str, str]) -> Tuple[str, str]:
+    """Étape 5 : pulsation de référence, transposition, fonction réelle puis chaque cellule.
+    Renvoie le nom de la pulsation de référence (ωp ou ω0), en texte et en syntaxe mathématique."""
+    res = r.res
+    g = res.gabarit
+    t = g.type
+    r.etape(5, "Fonction de transfert réelle")
     if t in ("PB", "PH"):
         w, w_tex, f_nom, f_tex = "ωp", r"\omega_p", "fp", "f_p"
-        f_val = hz(g.fp)
+        f_val = r.hz(g.fp)
     else:
         w, w_tex, f_nom, f_tex = "ω0", r"\omega_0", "f0", "f_0"
-        f_val = (f0_n, f0_t)
-    w_val = pulsation(res.w_ref)
-    question("a) Pulsation de référence")
-    calcul((w, w_tex), (f"2π·{f_nom}", r"2\pi\,%s" % f_tex), (f"2π × {f_val[0]}", r"2\pi \times %s" % f_val[1]),
-           w_val, _approche(res.w_ref))
-    question("b) Transposition de fréquence")
+        f_val = f0
+    w_val = r.pulsation(res.w_ref)
+    r.question("a) Pulsation de référence")
+    r.calcul((w, w_tex), (f"2π·{f_nom}", r"2\pi\,%s" % f_tex), (f"2π × {f_val[0]}", r"2\pi \times %s" % f_val[1]),
+             w_val, _approche(res.w_ref))
+    r.question("b) Transposition de fréquence")
     regle = {"PB": ("p → p/ωp", r"p \;\rightarrow\; \dfrac{p}{\omega_p}"),
              "PH": ("p → ωp/p", r"p \;\rightarrow\; \dfrac{\omega_p}{p}"),
              "PM": ("p → (1/B)·(p/ω0 + ω0/p)",
                     r"p \;\rightarrow\; \dfrac{1}{B}\left(\dfrac{p}{\omega_0} + \dfrac{\omega_0}{p}\right)"),
              "CB": ("p → B/(p/ω0 + ω0/p)", r"p \;\rightarrow\; \dfrac{B}{\dfrac{p}{\omega_0} + \dfrac{\omega_0}{p}}")}[t]
-    texte("Pour revenir au filtre réel, on remplace p dans la fonction normalisée :")
-    formule(regle[1], regle[0])
+    r.texte("Pour revenir au filtre réel, on remplace p dans la fonction normalisée :")
+    r.formule(regle[1], regle[0])
     if t == "CB":
-        detail("Pour le coupe-bande, B = (fp+ − fp−)/f0 : c'est cette largeur qui place le gain Gp "
-               "exactement en fp− et fp+.")
-    question("c) Fonction de transfert réelle")
+        r.detail("Pour le coupe-bande, B = (fp+ − fp−)/f0 : c'est cette largeur qui place le gain Gp "
+                 "exactement en fp− et fp+.")
+    r.question("c) Fonction de transfert réelle")
     if t == "PM":
-        texte("En unités SI (p en rad/s), la fonction de transfert réelle est le produit des cellules ; "
-              "K ramène son gain à 0 dB en f0 :")
+        r.texte("En unités SI (p en rad/s), la fonction de transfert réelle est le produit des cellules ; "
+                "K ramène son gain à 0 dB en f0 :")
     else:
-        texte("En unités SI (p en rad/s), la fonction de transfert réelle s'écrit :")
-    encadre("\n".join(tex_fonction_finale(res)), mt.texte_fonction_finale(res))
-    question("d) Fonction de transfert de chaque cellule")
+        r.texte("En unités SI (p en rad/s), la fonction de transfert réelle s'écrit :")
+    r.encadre("\n".join(tex_fonction_finale(res)), mt.texte_fonction_finale(res))
+    r.question("d) Fonction de transfert de chaque cellule")
     if t in ("PB", "PH"):
-        texte("Chaque facteur correspond à une cellule du montage, qui reprend un facteur de l'étape 4 :")
+        r.texte("Chaque facteur correspond à une cellule du montage, qui reprend un facteur de l'étape 4 :")
     else:
-        texte("Chaque facteur correspond à une cellule du montage" + (", de gain unité :" if t == "PM" else " :"))
+        r.texte("Chaque facteur correspond à une cellule du montage" + (", de gain unité :" if t == "PM" else " :"))
     for tex, c in tex_cellules_reelles(res):
         num_c, den_c = mt.fraction_cellule(c)
         nom = f"H{mt.nom_indice(c.nom)}(p)"
-        encadre(tex, f"{nom} = ({num_c}) / ({den_c})" if "+" in num_c else f"{nom} = {num_c} / ({den_c})")
-        detail(_description_cellule(c))
+        r.encadre(tex, f"{nom} = ({num_c}) / ({den_c})" if "+" in num_c else f"{nom} = {num_c} / ({den_c})")
+        r.detail(_description_cellule(c))
+    return w, w_tex
 
-    # ----- Étape 6 -----------------------------------------------------------
-    etape(6, "Valeurs des composants")
+
+def _etape6_composants(r: _Redaction, choix: Optional[mt.ChoixSeries], pont: bool, w: str, w_tex: str) -> None:
+    """Étape 6 : valeurs de référence, composants de chaque cellule, pont diviseur, tableau
+    récapitulatif ; puis la normalisation des valeurs si une série est choisie."""
+    res = r.res
+    t = res.gabarit.type
+    r.etape(6, "Valeurs des composants")
     if not res.montages:
-        texte("Le coupe-bande n'est pas réalisable avec la structure de Sallen & Key : il n'y a pas de "
-              "composants à calculer.")
-    else:
-        texte(f"Cellules de Sallen & Key à gain unité (K = 1). Les valeurs de référence sont liées par "
-              f"R0·C0·{w} = 1.")
-        question("a) Valeurs de référence")
-        if res.ref_pb:
-            R0, C0 = res.ref_pb
-            if t == "PM":
-                texte("Cellules passe-bas : R0 est imposée.")
-            r0, w_an = precis_si(R0, "Ω"), precis_puls(res.w_ref)
-            calcul(("C0", "C_0"), (f"1/(R0·{w})", r"\dfrac{1}{R_0\,%s}" % w_tex),
-                   (f"1/({r0[0]} × {w_an[0]})", r"\dfrac{1}{%s \times %s}" % (r0[1], w_an[1])),
-                   si(C0, "F"), _approche(C0))
-        if res.ref_ph:
-            R0, C0 = res.ref_ph
-            if t == "PM":
-                texte("Cellules passe-haut : C0 est imposé.")
-            c0, w_an = precis_si(C0, "F"), precis_puls(res.w_ref)
-            calcul(("R0", "R_0"), (f"1/(C0·{w})", r"\dfrac{1}{C_0\,%s}" % w_tex),
-                   (f"1/({c0[0]} × {w_an[0]})", r"\dfrac{1}{%s \times %s}" % (c0[1], w_an[1])),
-                   si(R0, "Ω"), _approche(R0))
-        # Repères du montage réel : R1, R2, R3… et C1, C2, C3… d'un bout à l'autre ; dans chaque
-        # cellule, éléments en série, puis contre-réaction (en haut), puis masse (en bas)
-        etages = mt.etages_reels(res, None, pont)
-        porteur = next((e for e in etages if e.pont), None)       # cellule qui porte le pont diviseur
-        question("b) Composants de chaque cellule")
-        texte("Les composants sont numérotés d'un bout à l'autre du montage (R1, R2, R3… et C1, C2, C3…) : "
-              "dans chaque cellule, d'abord les éléments en série dans l'ordre du signal, puis la "
-              "contre-réaction (en haut du schéma), puis l'élément vers la masse (en bas)."
-              + (f" Les résistances du pont diviseur d'entrée suivent la même règle (cellule "
-                 f"{porteur.montage.cellule.nom} : {porteur.designation('R1')} côté entrée, "
-                 f"{porteur.designation('Rb')} vers la masse) ; leurs valeurs sont calculées plus bas."
-                 if porteur else "")
-              + " Chaque cellule se déduit de ses coefficients m et q, tirés de sa pulsation propre ωn "
-                "et de son facteur de qualité Q (étape 5).")
-        for e in etages:
-            _etapes_cellule(e, res, w, w_tex, calcul, encadre, question, texte, decimales, si, precis,
-                            precis_si, precis_puls)
-        if t == "PM" and res.attenuateur():
-            nom_cellule, alpha, Ra, Rb = res.attenuateur()
-            gain = res.gain_montage()
-            question("c) Gain du montage et pont diviseur d'entrée")
-            texte(f"Chaque cellule a un gain de 1 loin de sa résonance (K = 1), mais près de f0 elles "
-                  f"amplifient : à f0, le montage a un gain A0 = {mt.fmt_nombre(gain)}, soit "
-                  f"{mt.fmt_nombre(20 * math.log10(gain), 3)} dB.")
-            if pont and porteur is not None:
-                R = porteur.montage.composants["R1"]
-                (r1, r1_t), (rb, rb_t) = ((n_, _nom_tex(n_)) for n_ in (porteur.designation("R1"),
-                                                                         porteur.designation("Rb")))
-                R_val, A_val, a_val = precis_si(R, "Ω"), precis(gain), precis(alpha)
-                texte(f"Le pont de la cellule {nom_cellule} atténue l'entrée de α = 1/A0 et remplace sa "
-                      f"résistance d'entrée R = {R_val[0]} : la cellule voit toujours R (résistances en "
-                      "parallèle), le gain du montage revient à 0 dB.")
-                calcul(("α", r"\alpha"), ("1/A0", r"\dfrac{1}{A_0}"), (f"1/{A_val[0]}", r"\dfrac{1}{%s}" % A_val[1]),
-                       nombre(alpha), _approche(alpha))
-                calcul((r1, r1_t), ("R/α", r"\dfrac{R}{\alpha}"),
-                       (f"{R_val[0]} / {a_val[0]}", r"\dfrac{%s}{%s}" % (R_val[1], a_val[1])), si(Ra, "Ω"), _approche(Ra))
-                calcul((rb, rb_t), ("R/(1 − α)", r"\dfrac{R}{1 - \alpha}"),
-                       (f"{R_val[0]} / (1 − {a_val[0]})", r"\dfrac{%s}{1 - %s}" % (R_val[1], a_val[1])), si(Rb, "Ω"),
-                       _approche(Rb))
-            else:
-                texte(mt.phrase_pont(res, pont))
-        texte("Tableau récapitulatif des valeurs calculées" + (", pont diviseur compris" if pont and porteur
-                                                                else "") + " :")
-        tableau_composants(etages, "calculees")
-        detail("Schéma de chaque cellule : onglet Composants. Montage complet avec les µA741 : onglet Câblage.")
+        r.texte("Le coupe-bande n'est pas réalisable avec la structure de Sallen & Key : il n'y a pas de "
+                "composants à calculer.")
+        return
+    r.texte(f"Cellules de Sallen & Key à gain unité (K = 1). Les valeurs de référence sont liées par "
+            f"R0·C0·{w} = 1.")
+    r.question("a) Valeurs de référence")
+    _valeurs_reference(r, w, w_tex)
+    # Repères du montage réel : R1, R2, R3… et C1, C2, C3… d'un bout à l'autre ; dans chaque
+    # cellule, éléments en série, puis contre-réaction (en haut), puis masse (en bas)
+    etages = mt.etages_reels(res, None, pont)
+    porteur = next((e for e in etages if e.pont), None)       # cellule qui porte le pont diviseur
+    r.question("b) Composants de chaque cellule")
+    r.texte("Les composants sont numérotés d'un bout à l'autre du montage (R1, R2, R3… et C1, C2, C3…) : "
+            "dans chaque cellule, d'abord les éléments en série dans l'ordre du signal, puis la "
+            "contre-réaction (en haut du schéma), puis l'élément vers la masse (en bas)."
+            + (f" Les résistances du pont diviseur d'entrée suivent la même règle (cellule "
+               f"{porteur.montage.cellule.nom} : {porteur.designation('R1')} côté entrée, "
+               f"{porteur.designation('Rb')} vers la masse) ; leurs valeurs sont calculées plus bas."
+               if porteur else "")
+            + " Chaque cellule se déduit de ses coefficients m et q, tirés de sa pulsation propre ωn "
+              "et de son facteur de qualité Q (étape 5).")
+    for e in etages:
+        _etapes_cellule(r, e, w, w_tex)
+    if t == "PM" and res.attenuateur():
+        _pont_diviseur(r, pont, porteur)
+    r.texte("Tableau récapitulatif des valeurs calculées" + (", pont diviseur compris" if pont and porteur
+                                                              else "") + " :")
+    r.tableau_composants(etages, "calculees")
+    r.detail("Schéma de chaque cellule : onglet Composants. Montage complet avec les µA741 : onglet Câblage.")
+    if choix is not None and choix.actif:
+        _normalisation_series(r, choix, pont)
 
-        # ----- Normalisation (séries E), à part : les valeurs calculées d'abord -----
-        if choix is not None and choix.actif:
-            etape(0, f"Normalisation des valeurs ({choix.court()})")
-            seule = (" Les condensateurs gardent leurs valeurs calculées." if not choix.condensateurs else
-                     " Les résistances gardent leurs valeurs calculées." if not choix.resistances else "")
-            texte(f"Les composants du commerce suivent les séries normalisées : {choix.libelle()}. Chaque valeur "
-                  "calculée est remplacée par la valeur la plus proche de sa série"
-                  + (" ou, si celle-ci s'écarte de plus de 1 %, par l'association de deux valeurs (« a + b » : "
-                     "résistances en série, condensateurs en parallèle)" if choix.associations else "")
-                  + "." + seule)
-            normalises = mt.etages_reels(res, choix, pont)
-            exemple = mt.premiere_association(normalises)
-            if exemple:
-                texte(f"Une association compte deux composants, numérotés chacun (par exemple « {exemple} ») : "
-                      "les repères qui suivent sont décalés d'autant. Ce sont ceux du montage réel (onglet "
-                      "Câblage).")
-            ajustees = mt.phrase_ajustements(res, choix, pont)
-            if ajustees:
-                texte(ajustees)
-            texte("Tableau récapitulatif des valeurs normalisées :")
-            tableau_composants(normalises, "normalisees")
-            texte(mt.phrase_ecart_serie(res, choix, pont) + " La vérification du gabarit ci-dessous porte aussi "
-                  "sur ces valeurs.")
 
-    # ----- Vérification ---------------------------------------------------------
-    etape(0, "Vérification du gabarit")
-    texte("On calcule le gain du filtre aux fréquences limites du gabarit :")
-    formule(r"G(f) = 20\,\log\left|H(j\,2\pi f)\right|", "G(f) = 20·log|H(j·2πf)|")
-    for p_ in res.points_controle():
-        signe = "≥" if p_.passante else "≤"
-        blocs.append(Bloc("controle", f"G({p_.nom}) = {mt.fmt_nombre(p_.G, 4)} dB  {signe}  "
-                                      f"{mt.fmt_compact(p_.limite)} dB", ok=p_.ok))
+def _valeurs_reference(r: _Redaction, w: str, w_tex: str) -> None:
+    """Étape 6 a) : C0 d'après R0 (cellules passe-bas), R0 d'après C0 (cellules passe-haut)."""
+    res = r.res
+    t = res.gabarit.type
+    if res.ref_pb:
+        R0, C0 = res.ref_pb
+        if t == "PM":
+            r.texte("Cellules passe-bas : R0 est imposée.")
+        r0, w_an = r.precis_si(R0, "Ω"), r.precis_puls(res.w_ref)
+        r.calcul(("C0", "C_0"), (f"1/(R0·{w})", r"\dfrac{1}{R_0\,%s}" % w_tex),
+                 (f"1/({r0[0]} × {w_an[0]})", r"\dfrac{1}{%s \times %s}" % (r0[1], w_an[1])),
+                 r.si(C0, "F"), _approche(C0))
+    if res.ref_ph:
+        R0, C0 = res.ref_ph
+        if t == "PM":
+            r.texte("Cellules passe-haut : C0 est imposé.")
+        c0, w_an = r.precis_si(C0, "F"), r.precis_puls(res.w_ref)
+        r.calcul(("R0", "R_0"), (f"1/(C0·{w})", r"\dfrac{1}{C_0\,%s}" % w_tex),
+                 (f"1/({c0[0]} × {w_an[0]})", r"\dfrac{1}{%s \times %s}" % (c0[1], w_an[1])),
+                 r.si(R0, "Ω"), _approche(R0))
+
+
+def _pont_diviseur(r: _Redaction, pont: bool, porteur: Optional[mt.Etage]) -> None:
+    """Étape 6 c), passe-bande : gain du montage à f0 et, avec l'option, le pont diviseur
+    d'entrée qui le ramène à 0 dB."""
+    res = r.res
+    nom_cellule, alpha, Ra, Rb = res.attenuateur()
+    gain = res.gain_montage()
+    r.question("c) Gain du montage et pont diviseur d'entrée")
+    r.texte(f"Chaque cellule a un gain de 1 loin de sa résonance (K = 1), mais près de f0 elles "
+            f"amplifient : à f0, le montage a un gain A0 = {mt.fmt_nombre(gain)}, soit "
+            f"{mt.fmt_nombre(20 * math.log10(gain), 3)} dB.")
+    if not (pont and porteur is not None):
+        r.texte(mt.phrase_pont(res, pont))
+        return
+    R = porteur.montage.composants["R1"]
+    (r1, r1_t), (rb, rb_t) = ((n_, _nom_tex(n_)) for n_ in (porteur.designation("R1"),
+                                                             porteur.designation("Rb")))
+    R_val, A_val, a_val = r.precis_si(R, "Ω"), r.precis(gain), r.precis(alpha)
+    r.texte(f"Le pont de la cellule {nom_cellule} atténue l'entrée de α = 1/A0 et remplace sa "
+            f"résistance d'entrée R = {R_val[0]} : la cellule voit toujours R (résistances en "
+            "parallèle), le gain du montage revient à 0 dB.")
+    r.calcul(("α", r"\alpha"), ("1/A0", r"\dfrac{1}{A_0}"), (f"1/{A_val[0]}", r"\dfrac{1}{%s}" % A_val[1]),
+             r.nombre(alpha), _approche(alpha))
+    r.calcul((r1, r1_t), ("R/α", r"\dfrac{R}{\alpha}"),
+             (f"{R_val[0]} / {a_val[0]}", r"\dfrac{%s}{%s}" % (R_val[1], a_val[1])), r.si(Ra, "Ω"), _approche(Ra))
+    r.calcul((rb, rb_t), ("R/(1 − α)", r"\dfrac{R}{1 - \alpha}"),
+             (f"{R_val[0]} / (1 − {a_val[0]})", r"\dfrac{%s}{1 - %s}" % (R_val[1], a_val[1])), r.si(Rb, "Ω"),
+             _approche(Rb))
+
+
+def _normalisation_series(r: _Redaction, choix: mt.ChoixSeries, pont: bool) -> None:
+    """Paragraphe à part, après les valeurs calculées : les valeurs normalisées (séries E)."""
+    res = r.res
+    r.etape(0, f"Normalisation des valeurs ({choix.court()})")
+    seule = (" Les condensateurs gardent leurs valeurs calculées." if not choix.condensateurs else
+             " Les résistances gardent leurs valeurs calculées." if not choix.resistances else "")
+    r.texte(f"Les composants du commerce suivent les séries normalisées : {choix.libelle()}. Chaque valeur "
+            "calculée est remplacée par la valeur la plus proche de sa série"
+            + (" ou, si celle-ci s'écarte de plus de 1 %, par l'association de deux valeurs (« a + b » : "
+               "résistances en série, condensateurs en parallèle)" if choix.associations else "")
+            + "." + seule)
+    normalises = mt.etages_reels(res, choix, pont)
+    exemple = mt.premiere_association(normalises)
+    if exemple:
+        r.texte(f"Une association compte deux composants, numérotés chacun (par exemple « {exemple} ») : "
+                "les repères qui suivent sont décalés d'autant. Ce sont ceux du montage réel (onglet "
+                "Câblage).")
+    ajustees = mt.phrase_ajustements(res, choix, pont)
+    if ajustees:
+        r.texte(ajustees)
+    r.texte("Tableau récapitulatif des valeurs normalisées :")
+    r.tableau_composants(normalises, "normalisees")
+    r.texte(mt.phrase_ecart_serie(res, choix, pont) + " La vérification du gabarit ci-dessous porte aussi "
+            "sur ces valeurs.")
+
+
+def _verification(r: _Redaction, choix: Optional[mt.ChoixSeries]) -> None:
+    """Vérification du gabarit (valeurs calculées, puis normalisées), puis les remarques."""
+    res = r.res
+    t = res.gabarit.type
+    r.etape(0, "Vérification du gabarit")
+    r.texte("On calcule le gain du filtre aux fréquences limites du gabarit :")
+    r.formule(r"G(f) = 20\,\log\left|H(j\,2\pi f)\right|", "G(f) = 20·log|H(j·2πf)|")
+    r.controles(res.points_controle())
     if choix is not None and choix.actif and res.montages:
-        texte(f"Avec les valeurs normalisées ({choix.court()}) :")
-        for p_ in res.points_controle_serie(choix):
-            signe = "≥" if p_.passante else "≤"
-            blocs.append(Bloc("controle", f"G({p_.nom}) = {mt.fmt_nombre(p_.G, 4)} dB  {signe}  "
-                                          f"{mt.fmt_compact(p_.limite)} dB", ok=p_.ok))
+        r.texte(f"Avec les valeurs normalisées ({choix.court()}) :")
+        r.controles(res.points_controle_serie(choix))
     for remarque in res.avertissements + res.remarques_montage:
         if not (t == "CB" and "Sallen & Key" in remarque):     # déjà dit à l'étape 6
-            detail(remarque)
-    return blocs
+            r.detail(remarque)
 
 
-def _etapes_cellule(e: mt.Etage, res: mt.Resultat, w: str, w_tex: str, calcul, encadre, question, texte,
-                    decimales, si, precis, precis_si, precis_puls) -> None:
-    """Étape 6, une cellule : ses coefficients m et q, puis chacun de ses composants, rédigés
-    comme sur une copie (formule, application numérique, résultat encadré)."""
-    m = e.montage
-    c = m.cellule
-    comp = m.composants
+class _RedactionCellule:
+    """Étape 6, une cellule : ses valeurs telles qu'on les écrit (résultats et applications
+    numériques), et les calculs qui reviennent d'une structure à l'autre."""
 
-    def nom(cle: str) -> Tuple[str, str]:
-        n_ = e.designation(cle)
+    def __init__(self, r: _Redaction, e: mt.Etage, w: str, w_tex: str):
+        self.r, self.e, self.w, self.w_tex = r, e, w, w_tex
+        m = self.m = e.montage
+        c = self.cellule = m.cellule
+        self.R0, self.C0 = r.si(m.R0, "Ω"), r.si(m.C0, "F")                       # résultats encadrés
+        self.R0_an, self.C0_an = r.precis_si(m.R0, "Ω"), r.precis_si(m.C0, "F")   # applications numériques
+        self.mm = r.decimales(m.m)
+        self.qq = r.decimales(m.q) if m.q is not None else None
+        self.m_an = r.precis(m.m)
+        self.q_an = r.precis(m.q) if m.q is not None else None
+        self.wn = mt.fmt_sci(c.wn, 4) + " rad/s"
+        self.wn_an, self.wref_an = r.precis_puls(c.wn), r.precis_puls(r.res.w_ref)
+
+    def nom(self, cle: str) -> Tuple[str, str]:
+        """Repère du composant `cle` dans le montage réel : (« R3 », « R_{3} »)."""
+        n_ = self.e.designation(cle)
         return n_, _nom_tex(n_)
 
-    R0, C0 = si(m.R0, "Ω"), si(m.C0, "F")                 # résultats encadrés
-    R0_an, C0_an = precis_si(m.R0, "Ω"), precis_si(m.C0, "F")   # dans les applications numériques
-    mm = decimales(m.m)
-    qq = decimales(m.q) if m.q is not None else None
-    m_an = precis(m.m)
-    q_an = precis(m.q) if m.q is not None else None
-    question(f"Cellule {c.nom} · {m.libelle.replace('Cellule ', '')}")
-    wn = mt.fmt_sci(c.wn, 4) + " rad/s"
-    wn_an, wref_an = precis_puls(c.wn), precis_puls(res.w_ref)
-
-    def rapport(sens_bas: bool) -> Tuple[Tuple[str, str], Tuple[str, str]]:
+    def rapport(self, sens_bas: bool) -> Tuple[Tuple[str, str], Tuple[str, str]]:
         """x = ω_ref/ωn (cellule passe-bas) ou ωn/ω_ref (passe-haut) : formule et A.N."""
+        w, w_tex, wref_an, wn_an = self.w, self.w_tex, self.wref_an, self.wn_an
         if sens_bas:
             return ((f"{w}/ωn", r"\dfrac{%s}{\omega_n}" % w_tex),
                     (f"{wref_an[0]} / {wn_an[0]}", r"\dfrac{%s}{%s}" % (wref_an[1], wn_an[1])))
         return ((f"ωn/{w}", r"\dfrac{\omega_n}{%s}" % w_tex),
                 (f"{wn_an[0]} / {wref_an[0]}", r"\dfrac{%s}{%s}" % (wn_an[1], wref_an[1])))
 
-    def coefficient(cle: str, symbole: str, coef_an: Tuple[str, str], unite: str) -> None:
+    def coefficient(self, cle: str, symbole: str, coef_an: Tuple[str, str], unite: str) -> None:
         """Composant = coefficient × valeur de référence (m·C0, q·C0) ou référence / coefficient
         (R0/m, R0/q)."""
+        valeur = self.m.composants[cle]
         if unite == "F":
-            calcul(nom(cle), (f"{symbole}·C0", r"%s\,C_0" % symbole),
-                   (f"{coef_an[0]} × {C0_an[0]}", r"%s \times %s" % (coef_an[1], C0_an[1])),
-                   si(comp[cle], "F"), _approche(comp[cle]))
+            self.r.calcul(self.nom(cle), (f"{symbole}·C0", r"%s\,C_0" % symbole),
+                          (f"{coef_an[0]} × {self.C0_an[0]}", r"%s \times %s" % (coef_an[1], self.C0_an[1])),
+                          self.r.si(valeur, "F"), _approche(valeur))
         else:
-            calcul(nom(cle), (f"R0/{symbole}", r"\dfrac{R_0}{%s}" % symbole),
-                   (f"{R0_an[0]} / {coef_an[0]}", r"\dfrac{%s}{%s}" % (R0_an[1], coef_an[1])),
-                   si(comp[cle], "Ω"), _approche(comp[cle]))
+            self.r.calcul(self.nom(cle), (f"R0/{symbole}", r"\dfrac{R_0}{%s}" % symbole),
+                          (f"{self.R0_an[0]} / {coef_an[0]}", r"\dfrac{%s}{%s}" % (self.R0_an[1], coef_an[1])),
+                          self.r.si(valeur, "Ω"), _approche(valeur))
 
-    if m.structure in ("SK_PB", "SK_PH"):
-        Q, Q_an = mt.fmt_nombre(c.Q), precis(c.Q)
-        texte(f"Pulsation propre ωn = {wn}, facteur de qualité Q = {Q}.")
-        x = res.w_ref / c.wn if m.structure == "SK_PB" else c.wn / res.w_ref
-        if abs(x - 1) < 1e-9:
-            calcul(("m", "m"), ("1/(2Q)", r"\dfrac{1}{2Q}"),
-                   (f"1/(2 × {Q_an[0]})", r"\dfrac{1}{2\times %s}" % Q_an[1]), mm, _approche_dec(m.m))
-            calcul(("q", "q"), ("2Q", "2Q"), (f"2 × {Q_an[0]}", r"2\times %s" % Q_an[1]), qq, _approche_dec(m.q))
-        else:
-            xx, x_an = decimales(x), precis(x)
-            lit, num = rapport(m.structure == "SK_PB")
-            calcul(("x", "x"), lit, num, xx, _approche_dec(x))
-            calcul(("m", "m"), ("x/(2Q)", r"\dfrac{x}{2Q}"),
-                   (f"{x_an[0]}/(2 × {Q_an[0]})", r"\dfrac{%s}{2\times %s}" % (x_an[1], Q_an[1])),
-                   mm, _approche_dec(m.m))
-            calcul(("q", "q"), ("2Q·x", r"2Q\,x"),
-                   (f"2 × {Q_an[0]} × {x_an[0]}", r"2\times %s\times %s" % (Q_an[1], x_an[1])),
-                   qq, _approche_dec(m.q))
-        if m.structure == "SK_PB":
-            (r1, r1_t), (r2, r2_t) = nom("R1"), nom("R2")
-            if e.pont:                       # la résistance d'entrée R est réalisée par le pont diviseur
-                r1, r1_t = "R", "R"
-            encadre(r"%s = %s = R_0 = %s" % (r1_t, r2_t, R0[1]), f"{r1} = {r2} = R0 = {R0[0]}")
-            if e.pont:
-                texte(f"R est la résistance d'entrée de la cellule : le pont diviseur ({e.designation('R1')} et "
-                      f"{e.designation('Rb')}) la réalise, ses valeurs sont calculées plus bas.")
-            coefficient("C2", "q", q_an, "F")                 # contre-réaction
-            coefficient("C1", "m", m_an, "F")                 # vers la masse
-        else:
-            (c1, c1_t), (c2, c2_t) = nom("C1"), nom("C2")
-            encadre(r"%s = %s = C_0 = %s" % (c1_t, c2_t, C0[1]), f"{c1} = {c2} = C0 = {C0[0]}")
-            coefficient("R2", "q", q_an, "Ω")                 # contre-réaction
-            coefficient("R1", "m", m_an, "Ω")                 # vers la masse
-    elif m.structure in ("RC", "CR"):
-        texte(f"Pulsation de coupure ωn = {wn}.")
-        lit, num = rapport(m.structure == "RC")
-        calcul(("m", "m"), lit, num, mm, _approche_dec(m.m))
-        if m.structure == "RC":
-            r1, r1_t = nom("R1")
-            encadre(r"%s = R_0 = %s" % (r1_t, R0[1]), f"{r1} = R0 = {R0[0]}")
-            coefficient("C1", "m", m_an, "F")
-        else:
-            c1, c1_t = nom("C1")
-            encadre(r"%s = C_0 = %s" % (c1_t, C0[1]), f"{c1} = C0 = {C0[0]}")
-            coefficient("R1", "m", m_an, "Ω")
-    else:                                                    # passe-bande de Rauch
-        Q, Q_an = mt.fmt_nombre(c.Q), precis(c.Q)
-        texte(f"Cellule passe-bande centrée sur f0, de facteur de qualité Q = {Q}.")
-        calcul(("q", "q"), ("2Q", "2Q"), (f"2 × {Q_an[0]}", r"2\times %s" % Q_an[1]), qq, _approche_dec(m.q))
-        calcul(("m", "m"), ("1/q", r"\dfrac{1}{q}"), (f"1/{q_an[0]}", r"\dfrac{1}{%s}" % q_an[1]), mm,
-               _approche_dec(m.m))
-        (r1, r1_t), (r3, r3_t) = nom("R1"), nom("R3")
-        calcul((f"{r1} = {r3}", f"{r1_t} = {r3_t}"), ("q·R0", r"q\,R_0"),
-               (f"{q_an[0]} × {R0_an[0]}", r"%s \times %s" % (q_an[1], R0_an[1])), si(comp["R1"], "Ω"),
-               _approche(comp["R1"]))
-        calcul(nom("R2"), ("m·R0/(1 − m²)", r"\dfrac{m\,R_0}{1 - m^2}"),
-               (f"{m_an[0]} × {R0_an[0]} / (1 − {m_an[0]}²)",
-                r"\dfrac{%s \times %s}{1 - %s^2}" % (m_an[1], R0_an[1], m_an[1])),
-               si(comp["R2"], "Ω"), _approche(comp["R2"]))
-        (c2, c2_t), (c1, c1_t) = nom("C2"), nom("C1")
-        encadre(r"%s = %s = C_0 = %s" % (c2_t, c1_t, C0[1]), f"{c2} = {c1} = C0 = {C0[0]}")
+
+def _etapes_cellule(r: _Redaction, e: mt.Etage, w: str, w_tex: str) -> None:
+    """Étape 6, une cellule : ses coefficients m et q, puis chacun de ses composants, rédigés
+    comme sur une copie (formule, application numérique, résultat encadré)."""
+    rc = _RedactionCellule(r, e, w, w_tex)
+    r.question(f"Cellule {rc.cellule.nom} · {rc.m.libelle.replace('Cellule ', '')}")
+    if rc.m.structure in ("SK_PB", "SK_PH"):
+        _etapes_sallen_key(rc)
+    elif rc.m.structure in ("RC", "CR"):
+        _etapes_premier_ordre(rc)
+    else:
+        _etapes_rauch(rc)
+
+
+def _etapes_sallen_key(rc: _RedactionCellule) -> None:
+    """Cellule de Sallen & Key : x (s'il diffère de 1), m et q, puis les composants."""
+    r, e, m, c = rc.r, rc.e, rc.m, rc.cellule
+    Q, Q_an = mt.fmt_nombre(c.Q), r.precis(c.Q)
+    r.texte(f"Pulsation propre ωn = {rc.wn}, facteur de qualité Q = {Q}.")
+    x = r.res.w_ref / c.wn if m.structure == "SK_PB" else c.wn / r.res.w_ref
+    if abs(x - 1) < 1e-9:
+        r.calcul(("m", "m"), ("1/(2Q)", r"\dfrac{1}{2Q}"),
+                 (f"1/(2 × {Q_an[0]})", r"\dfrac{1}{2\times %s}" % Q_an[1]), rc.mm, _approche_dec(m.m))
+        r.calcul(("q", "q"), ("2Q", "2Q"), (f"2 × {Q_an[0]}", r"2\times %s" % Q_an[1]), rc.qq, _approche_dec(m.q))
+    else:
+        xx, x_an = r.decimales(x), r.precis(x)
+        lit, num = rc.rapport(m.structure == "SK_PB")
+        r.calcul(("x", "x"), lit, num, xx, _approche_dec(x))
+        r.calcul(("m", "m"), ("x/(2Q)", r"\dfrac{x}{2Q}"),
+                 (f"{x_an[0]}/(2 × {Q_an[0]})", r"\dfrac{%s}{2\times %s}" % (x_an[1], Q_an[1])),
+                 rc.mm, _approche_dec(m.m))
+        r.calcul(("q", "q"), ("2Q·x", r"2Q\,x"),
+                 (f"2 × {Q_an[0]} × {x_an[0]}", r"2\times %s\times %s" % (Q_an[1], x_an[1])),
+                 rc.qq, _approche_dec(m.q))
+    if m.structure == "SK_PB":
+        (r1, r1_t), (r2, r2_t) = rc.nom("R1"), rc.nom("R2")
+        if e.pont:                       # la résistance d'entrée R est réalisée par le pont diviseur
+            r1, r1_t = "R", "R"
+        r.encadre(r"%s = %s = R_0 = %s" % (r1_t, r2_t, rc.R0[1]), f"{r1} = {r2} = R0 = {rc.R0[0]}")
+        if e.pont:
+            r.texte(f"R est la résistance d'entrée de la cellule : le pont diviseur ({e.designation('R1')} et "
+                    f"{e.designation('Rb')}) la réalise, ses valeurs sont calculées plus bas.")
+        rc.coefficient("C2", "q", rc.q_an, "F")                 # contre-réaction
+        rc.coefficient("C1", "m", rc.m_an, "F")                 # vers la masse
+    else:
+        (c1, c1_t), (c2, c2_t) = rc.nom("C1"), rc.nom("C2")
+        r.encadre(r"%s = %s = C_0 = %s" % (c1_t, c2_t, rc.C0[1]), f"{c1} = {c2} = C0 = {rc.C0[0]}")
+        rc.coefficient("R2", "q", rc.q_an, "Ω")                 # contre-réaction
+        rc.coefficient("R1", "m", rc.m_an, "Ω")                 # vers la masse
+
+
+def _etapes_premier_ordre(rc: _RedactionCellule) -> None:
+    """Cellule RC ou CR : m, puis la référence et l'autre composant."""
+    r, m = rc.r, rc.m
+    r.texte(f"Pulsation de coupure ωn = {rc.wn}.")
+    lit, num = rc.rapport(m.structure == "RC")
+    r.calcul(("m", "m"), lit, num, rc.mm, _approche_dec(m.m))
+    if m.structure == "RC":
+        r1, r1_t = rc.nom("R1")
+        r.encadre(r"%s = R_0 = %s" % (r1_t, rc.R0[1]), f"{r1} = R0 = {rc.R0[0]}")
+        rc.coefficient("C1", "m", rc.m_an, "F")
+    else:
+        c1, c1_t = rc.nom("C1")
+        r.encadre(r"%s = C_0 = %s" % (c1_t, rc.C0[1]), f"{c1} = C0 = {rc.C0[0]}")
+        rc.coefficient("R1", "m", rc.m_an, "Ω")
+
+
+def _etapes_rauch(rc: _RedactionCellule) -> None:
+    """Cellule passe-bande de Rauch (centre d'un passe-bande d'ordre impair) : q, m, puis les
+    composants."""
+    r, m, c = rc.r, rc.m, rc.cellule
+    comp = m.composants
+    q_an, m_an, R0_an = rc.q_an, rc.m_an, rc.R0_an
+    Q, Q_an = mt.fmt_nombre(c.Q), r.precis(c.Q)
+    r.texte(f"Cellule passe-bande centrée sur f0, de facteur de qualité Q = {Q}.")
+    r.calcul(("q", "q"), ("2Q", "2Q"), (f"2 × {Q_an[0]}", r"2\times %s" % Q_an[1]), rc.qq, _approche_dec(m.q))
+    r.calcul(("m", "m"), ("1/q", r"\dfrac{1}{q}"), (f"1/{q_an[0]}", r"\dfrac{1}{%s}" % q_an[1]), rc.mm,
+             _approche_dec(m.m))
+    (r1, r1_t), (r3, r3_t) = rc.nom("R1"), rc.nom("R3")
+    r.calcul((f"{r1} = {r3}", f"{r1_t} = {r3_t}"), ("q·R0", r"q\,R_0"),
+             (f"{q_an[0]} × {R0_an[0]}", r"%s \times %s" % (q_an[1], R0_an[1])), r.si(comp["R1"], "Ω"),
+             _approche(comp["R1"]))
+    r.calcul(rc.nom("R2"), ("m·R0/(1 − m²)", r"\dfrac{m\,R_0}{1 - m^2}"),
+             (f"{m_an[0]} × {R0_an[0]} / (1 − {m_an[0]}²)",
+              r"\dfrac{%s \times %s}{1 - %s^2}" % (m_an[1], R0_an[1], m_an[1])),
+             r.si(comp["R2"], "Ω"), _approche(comp["R2"]))
+    (c2, c2_t), (c1, c1_t) = rc.nom("C2"), rc.nom("C1")
+    r.encadre(r"%s = %s = C_0 = %s" % (c2_t, c1_t, rc.C0[1]), f"{c2} = {c1} = C0 = {rc.C0[0]}")
 
 
 def _description_cellule(c: mt.Cellule) -> str:

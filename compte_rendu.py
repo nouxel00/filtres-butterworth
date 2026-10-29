@@ -347,25 +347,55 @@ def creer_compte_rendu(chemin: str, res: mt.Resultat, choix: Optional[mt.ChoixSe
                        pont: bool = False, aop: bool = False, dispersion: bool = False,
                        fichier: str = "", version: str = "") -> None:
     """Écrit le compte rendu PDF complet du résultat affiché dans le programme."""
-    g, nm = res.gabarit, res.norm
-    t = g.type
+    t = res.gabarit.type
     serie = choix is not None and choix.actif and bool(res.montages)
     choix_serie = choix if serie else None
+    pont_actif = pont and bool(res.attenuateur())
     ordre_reel = 2 * res.n if t in ("PM", "CB") else res.n
-    nom_type = mt.NOMS_TYPES[t]
-    titre = f"Filtre {nom_type.lower()} de Butterworth d'ordre {ordre_reel}"
+    titre = f"Filtre {mt.NOMS_TYPES[t].lower()} de Butterworth d'ordre {ordre_reel}"
     auteur = f"Filtres de Butterworth {version}".strip()
     doc = Document()
+    _page_resume(doc, res, choix, pont, fichier, auteur)
+    _pages_bode(doc, res, choix, pont, aop, dispersion)
+    _pages_etapes(doc, res, choix_serie, pont_actif)
+    if res.montages:
+        _pages_schemas(doc, res, choix_serie, pont_actif)
+    doc.enregistrer(chemin, titre, auteur)
 
-    # ----- Page 1 : résumé ----------------------------------------------------
+
+def _page_resume(doc: Document, res: mt.Resultat, choix: Optional[mt.ChoixSeries], pont: bool,
+                 fichier: str, auteur: str) -> None:
+    """Page 1 : titre, gabarit, résultats, vérification du gabarit, valeurs des composants."""
+    t = res.gabarit.type
+    serie = choix is not None and choix.actif and bool(res.montages)
+    ordre_reel = 2 * res.n if t in ("PM", "CB") else res.n
     doc.texte("Synthèse d'un filtre de Butterworth", taille=20, gras=True, apres=0.02)
-    doc.texte(f"{nom_type} d'ordre {ordre_reel} · cellules de Sallen & Key à gain unité", taille=12.5,
+    doc.texte(f"{mt.NOMS_TYPES[t]} d'ordre {ordre_reel} · cellules de Sallen & Key à gain unité", taille=12.5,
               couleur=ENCRE2, apres=0.05)
     date = time.strftime("%d/%m/%Y à %H:%M")
     doc.texte(f"Compte rendu du {date}" + (f" · fichier {fichier}" if fichier else "") + f" · {auteur}",
               taille=8.5, couleur=DISCRET, apres=0.12)
     doc.filet()
+    _section_gabarit(doc, res.gabarit)
+    _section_resultats(doc, res, pont)
 
+    doc.titre_section("Vérification du gabarit")
+    doc.texte("Gain du filtre calculé aux fréquences limites du gabarit :", taille=10, couleur=ENCRE2)
+    _controles(doc, res.points_controle())
+    if serie:
+        doc.texte(f"Avec les valeurs normalisées ({choix.court()}) :", taille=10, couleur=ENCRE2)
+        _controles(doc, res.points_controle_serie(choix))
+
+    if res.montages:
+        _section_composants(doc, res, choix if serie else None, pont and bool(res.attenuateur()))
+    remarques = res.avertissements + res.remarques_montage
+    for remarque in remarques:
+        doc.texte("•  " + remarque, taille=8.5, couleur=DISCRET, apres=0.02)
+
+
+def _section_gabarit(doc: Document, g: mt.Gabarit) -> None:
+    """Tableau du gabarit saisi : fréquences, gains et valeurs de référence."""
+    t = g.type
     doc.titre_section("Gabarit")
     lignes = [["Paramètre", "Valeur", "Rôle"]]
     for nom in list(mt.FREQUENCES[t]) + ["Gp", "Ga"]:
@@ -378,6 +408,12 @@ def creer_compte_rendu(chemin: str, res: mt.Resultat, choix: Optional[mt.ChoixSe
         lignes.append(["C0", mt.fmt_si(g.C0, "F", compact=True), ROLES["C0"]])
     doc.tableau(lignes)
 
+
+def _section_resultats(doc: Document, res: mt.Resultat, pont: bool) -> None:
+    """Tableau des résultats : ordre, sélectivité, ondulation, références, montage, gain à f0."""
+    nm = res.norm
+    t = res.gabarit.type
+    ordre_reel = 2 * res.n if t in ("PM", "CB") else res.n
     doc.titre_section("Résultats")
     lignes = [["Grandeur", "Valeur", "Détail"],
               ["Ordre", f"n = {res.n}", f"n ≥ {mt.fmt_nombre(res.n_exact)}"
@@ -403,35 +439,33 @@ def creer_compte_rendu(chemin: str, res: mt.Resultat, choix: Optional[mt.ChoixSe
                        "avec le pont diviseur d'entrée" if pont and res.attenuateur() else "cellules à gain unité"])
     doc.tableau(lignes)
 
-    doc.titre_section("Vérification du gabarit")
-    doc.texte("Gain du filtre calculé aux fréquences limites du gabarit :", taille=10, couleur=ENCRE2)
-    _controles(doc, res.points_controle())
-    if serie:
-        doc.texte(f"Avec les valeurs normalisées ({choix.court()}) :", taille=10, couleur=ENCRE2)
-        _controles(doc, res.points_controle_serie(choix))
 
-    if res.montages:
-        doc.titre_section("Valeurs des composants")
-        pont_actif = pont and bool(res.attenuateur())
-        doc.texte("Valeurs calculées (R0·C0·ω = 1, puis m et q de chaque cellule)"
-                  + (", pont diviseur d'entrée compris" if pont_actif else "") + ". Repères du montage réel : "
-                  "dans chaque cellule, éléments en série, puis contre-réaction, puis masse.", taille=10,
-                  couleur=ENCRE2)
-        _tableau_composants(doc, mt.etages_reels(res, None, pont_actif))
-        if serie:
-            normalises = mt.etages_reels(res, choix, pont_actif)
-            exemple = mt.premiere_association(normalises)
-            ajustees = mt.phrase_ajustements(res, choix, pont_actif)
-            doc.texte(f"Valeurs normalisées : {choix.libelle()}."
-                      + (" « a + b » : deux résistances en série ou deux condensateurs en parallèle, numérotés "
-                         f"chacun (par exemple « {exemple} ») ; les repères qui suivent sont décalés d'autant."
-                         if exemple else "") + (" " + ajustees if ajustees else ""), taille=10, couleur=ENCRE2)
-            _tableau_composants(doc, normalises)
-    remarques = res.avertissements + res.remarques_montage
-    for remarque in remarques:
-        doc.texte("•  " + remarque, taille=8.5, couleur=DISCRET, apres=0.02)
+def _section_composants(doc: Document, res: mt.Resultat, choix_serie: Optional[mt.ChoixSeries],
+                        pont_actif: bool) -> None:
+    """Valeurs des composants : calculées, puis normalisées si une série est choisie."""
+    doc.titre_section("Valeurs des composants")
+    doc.texte("Valeurs calculées (R0·C0·ω = 1, puis m et q de chaque cellule)"
+              + (", pont diviseur d'entrée compris" if pont_actif else "") + ". Repères du montage réel : "
+              "dans chaque cellule, éléments en série, puis contre-réaction, puis masse.", taille=10,
+              couleur=ENCRE2)
+    _tableau_composants(doc, mt.etages_reels(res, None, pont_actif))
+    if choix_serie is not None:
+        normalises = mt.etages_reels(res, choix_serie, pont_actif)
+        exemple = mt.premiere_association(normalises)
+        ajustees = mt.phrase_ajustements(res, choix_serie, pont_actif)
+        doc.texte(f"Valeurs normalisées : {choix_serie.libelle()}."
+                  + (" « a + b » : deux résistances en série ou deux condensateurs en parallèle, numérotés "
+                     f"chacun (par exemple « {exemple} ») ; les repères qui suivent sont décalés d'autant."
+                     if exemple else "") + (" " + ajustees if ajustees else ""), taille=10, couleur=ENCRE2)
+        _tableau_composants(doc, normalises)
 
-    # ----- Diagrammes de Bode (à la suite, s'il reste de la place) -------------------
+
+def _pages_bode(doc: Document, res: mt.Resultat, choix: Optional[mt.ChoixSeries], pont: bool,
+                aop: bool, dispersion: bool) -> None:
+    """Diagrammes de Bode normalisé et réel (à la suite de la page 1, s'il reste de la place)."""
+    serie = choix is not None and choix.actif and bool(res.montages)
+    choix_serie = choix if serie else None
+    nom_type = mt.NOMS_TYPES[res.gabarit.type]
     doc.saut_de_page(sauf_si_reste=0.45)
     doc.titre_section("Diagrammes de Bode")
     doc.image(_figure_bode(res, True, None, False, False)[0],
@@ -451,77 +485,86 @@ def creer_compte_rendu(chemin: str, res: mt.Resultat, choix: Optional[mt.ChoixSe
         legende += " " + mt.bilan_dispersion(res, courbe.dispersion, choix_serie)
     doc.image(figure_reel, legende=legende)
 
-    # ----- Étapes du calcul --------------------------------------------------------
+
+H_CONTROLE = 10 * 1.42 / 72 + 0.01      # hauteur d'une ligne de vérification du gabarit (pouces)
+
+
+def _pages_etapes(doc: Document, res: mt.Resultat, choix_serie: Optional[mt.ChoixSeries], pont_actif: bool) -> None:
+    """Étapes du calcul, bloc par bloc, comme dans l'onglet du programme."""
     doc.saut_de_page(sauf_si_reste=0.35)
     doc.titre_section("Étapes du calcul")
-    blocs = gr.etapes_du_calcul(res, choix_serie, pont and bool(res.attenuateur()))
-    h_controle = 10 * 1.42 / 72 + 0.01
-
-    def a_garder(j: int) -> float:
-        """Hauteur d'une liste de vérifications (et de sa phrase d'introduction) qui commence au
-        bloc j : elle reste d'un seul tenant, sur la même page que son titre."""
-        hauteur = 0.0
-        if j < len(blocs) and blocs[j].genre == "texte":
-            hauteur, j = doc._hauteur_texte(blocs[j].texte, 10) + 0.04, j + 1
-        n = 0
-        while j + n < len(blocs) and blocs[j + n].genre == "controle":
-            n += 1
-        return hauteur + n * h_controle if n else 0.0
-
+    blocs = gr.etapes_du_calcul(res, choix_serie, pont_actif)
     i = 0
     while i < len(blocs):
-        b = blocs[i]
-        if b.genre == "etape":
-            titre_etape = f"Étape {b.numero} · {b.texte}" if b.numero else b.texte
-            doc.texte(titre_etape, taille=12, gras=True, couleur=ENCRE, avant=0.14, apres=0.05,
-                      reserve=max(0.8, a_garder(i + 1) + 0.05))
-        elif b.genre == "texte":
-            # Une phrase qui annonce une formule ou un tableau reste sur la même page qu'eux
-            suite = blocs[i + 1].genre if i + 1 < len(blocs) else ""
-            reserve = a_garder(i) or (0.55 if suite in ("formule", "an", "resultat", "entete", "ligne") else 0.0)
-            doc.texte(b.texte, taille=10, couleur=ENCRE2, apres=0.04, reserve=reserve)
-        elif b.genre == "question":
-            doc.texte(b.texte, taille=10.5, gras=True, couleur=ENCRE, avant=0.08, apres=0.03, reserve=0.75)
-        elif b.genre == "formule":
-            doc.formule(b.tex)
-        elif b.genre == "an":
-            doc.formule(gr.TEX_AN + b.tex, retrait=0.45, apres=0.08)
-        elif b.genre == "resultat":
-            doc.formule(b.tex, cadre=gr.CADRE_RESULTAT, apres=0.14)
-        elif b.genre in ("ligne", "entete"):
-            groupe = []                              # lignes du même tableau (en-tête éventuel en tête)
-            while i < len(blocs) and blocs[i].genre in ("ligne", "entete") and blocs[i].tableau == b.tableau:
-                groupe.append(blocs[i].texte.split("\t"))
-                i += 1
-            doc.tableau(groupe, taille=9.5, entete=b.genre == "entete", retrait=0.1)
-            continue
-        elif b.genre == "valeurs":
-            doc.texte(b.texte, taille=9.5, couleur=ENCRE, retrait=0.3, apres=0.06)
-        elif b.genre == "detail":
-            doc.texte(b.texte, taille=8.5, couleur=DISCRET, retrait=0.05, apres=0.06)
-        elif b.genre == "controle":
-            doc.texte(("✓  " if b.ok else "✕  ") + b.texte + ("" if b.ok else "   non respecté"), taille=10,
-                      couleur=VERT if b.ok else ROUGE, retrait=0.1, apres=0.01, reserve=a_garder(i) - h_controle)
-        i += 1
+        i = _ecrire_bloc(doc, blocs, i)
 
-    # ----- Schémas des cellules -------------------------------------------------------
-    if res.montages:
-        doc.saut_de_page(sauf_si_reste=0.4)
-        doc.titre_section("Schémas des cellules")
-        for e in mt.etages_reels(res, choix_serie, pont and bool(res.attenuateur())):
-            m = e.montage
-            fig = Figure(figsize=(8, 2.6), dpi=100, facecolor="white")
-            FigureCanvasAgg(fig)
-            gr.dessiner_cellule(fig, e)
-            c = m.cellule
-            f = mt.fmt_si(c.wn / (2 * math.pi), "Hz")
-            detail = (f"fréquence de coupure {f}" if c.ordre == 1 else
-                      f"fréquence propre {f}, Q = {mt.fmt_nombre(c.Q)}")
-            doc.image(fig, largeur=LARGEUR * 0.92, legende=f"Cellule {c.nom} : {m.libelle}, {detail}.")
 
-        # ----- Câblage ---------------------------------------------------------------------
-        doc.saut_de_page()
-        doc.image(gr.schema_cablage(res, choix_serie, largeur_pouces=9.0, pont=pont and bool(res.attenuateur())),
-                  titre="Schéma de câblage")
+def _hauteur_a_garder(doc: Document, blocs: List[gr.Bloc], j: int) -> float:
+    """Hauteur d'une liste de vérifications (et de sa phrase d'introduction) qui commence au
+    bloc j : elle reste d'un seul tenant, sur la même page que son titre."""
+    hauteur = 0.0
+    if j < len(blocs) and blocs[j].genre == "texte":
+        hauteur, j = doc._hauteur_texte(blocs[j].texte, 10) + 0.04, j + 1
+    n = 0
+    while j + n < len(blocs) and blocs[j + n].genre == "controle":
+        n += 1
+    return hauteur + n * H_CONTROLE if n else 0.0
 
-    doc.enregistrer(chemin, titre, auteur)
+
+def _ecrire_bloc(doc: Document, blocs: List[gr.Bloc], i: int) -> int:
+    """Écrit le bloc i des étapes (et, pour un tableau, toutes ses lignes) ; renvoie l'indice
+    du bloc suivant."""
+    b = blocs[i]
+    if b.genre == "etape":
+        titre_etape = f"Étape {b.numero} · {b.texte}" if b.numero else b.texte
+        doc.texte(titre_etape, taille=12, gras=True, couleur=ENCRE, avant=0.14, apres=0.05,
+                  reserve=max(0.8, _hauteur_a_garder(doc, blocs, i + 1) + 0.05))
+    elif b.genre == "texte":
+        # Une phrase qui annonce une formule ou un tableau reste sur la même page qu'eux
+        suite = blocs[i + 1].genre if i + 1 < len(blocs) else ""
+        reserve = (_hauteur_a_garder(doc, blocs, i)
+                   or (0.55 if suite in ("formule", "an", "resultat", "entete", "ligne") else 0.0))
+        doc.texte(b.texte, taille=10, couleur=ENCRE2, apres=0.04, reserve=reserve)
+    elif b.genre == "question":
+        doc.texte(b.texte, taille=10.5, gras=True, couleur=ENCRE, avant=0.08, apres=0.03, reserve=0.75)
+    elif b.genre == "formule":
+        doc.formule(b.tex)
+    elif b.genre == "an":
+        doc.formule(gr.TEX_AN + b.tex, retrait=0.45, apres=0.08)
+    elif b.genre == "resultat":
+        doc.formule(b.tex, cadre=gr.CADRE_RESULTAT, apres=0.14)
+    elif b.genre in ("ligne", "entete"):
+        groupe = []                              # lignes du même tableau (en-tête éventuel en tête)
+        while i < len(blocs) and blocs[i].genre in ("ligne", "entete") and blocs[i].tableau == b.tableau:
+            groupe.append(blocs[i].texte.split("\t"))
+            i += 1
+        doc.tableau(groupe, taille=9.5, entete=b.genre == "entete", retrait=0.1)
+        return i
+    elif b.genre == "valeurs":
+        doc.texte(b.texte, taille=9.5, couleur=ENCRE, retrait=0.3, apres=0.06)
+    elif b.genre == "detail":
+        doc.texte(b.texte, taille=8.5, couleur=DISCRET, retrait=0.05, apres=0.06)
+    elif b.genre == "controle":
+        doc.texte(("✓  " if b.ok else "✕  ") + b.texte + ("" if b.ok else "   non respecté"), taille=10,
+                  couleur=VERT if b.ok else ROUGE, retrait=0.1, apres=0.01,
+                  reserve=_hauteur_a_garder(doc, blocs, i) - H_CONTROLE)
+    return i + 1
+
+
+def _pages_schemas(doc: Document, res: mt.Resultat, choix_serie: Optional[mt.ChoixSeries], pont_actif: bool) -> None:
+    """Schéma de chaque cellule, puis le schéma de câblage complet (page à part)."""
+    doc.saut_de_page(sauf_si_reste=0.4)
+    doc.titre_section("Schémas des cellules")
+    for e in mt.etages_reels(res, choix_serie, pont_actif):
+        m = e.montage
+        fig = Figure(figsize=(8, 2.6), dpi=100, facecolor="white")
+        FigureCanvasAgg(fig)
+        gr.dessiner_cellule(fig, e)
+        c = m.cellule
+        f = mt.fmt_si(c.wn / (2 * math.pi), "Hz")
+        detail = (f"fréquence de coupure {f}" if c.ordre == 1 else
+                  f"fréquence propre {f}, Q = {mt.fmt_nombre(c.Q)}")
+        doc.image(fig, largeur=LARGEUR * 0.92, legende=f"Cellule {c.nom} : {m.libelle}, {detail}.")
+
+    doc.saut_de_page()
+    doc.image(gr.schema_cablage(res, choix_serie, largeur_pouces=9.0, pont=pont_actif), titre="Schéma de câblage")

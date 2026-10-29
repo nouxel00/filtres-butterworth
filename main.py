@@ -11,8 +11,14 @@ Organisation du programme :
     moteur.py     les calculs (étapes 1 à 6 de la méthode de synthèse),
                   utilisable seul :  python moteur.py
     graphes.py    les dessins : diagrammes de Bode, schémas, formules
-    interface.py  la fenêtre et les interactions
+    interface.py  la fenêtre principale et les interactions, avec :
+        commun.py    couleurs, polices, numéro de version, préférences
+        saisie.py    la colonne de saisie (type, gabarit, séries)
+        panneaux.py  les résultats (bandeau, onglets, accueil)
+        aide.py      le menu Aide, la visite guidée, la fenêtre du cours
     compte_rendu.py  le compte rendu PDF (menu Fichier)
+    netlist.py    les netlists LTspice et PSpice (onglet Câblage)
+    guide.py      le contenu du cours « Comprendre Sallen & Key » (F2)
 """
 
 import os

@@ -16,7 +16,7 @@ ICONE = os.path.join(RACINE, "icone.ico")
 a = Analysis(
     [os.path.join(RACINE, "main.py")],
     pathex=[RACINE],
-    # Fichiers lus par le programme (voir interface.chemin_ressource) ; le LISEZMOI sert au
+    # Fichiers lus par le programme (voir commun.chemin_ressource) ; le LISEZMOI sert au
     # menu Aide > Mode d'emploi
     datas=[(ICONE, "."), (os.path.join(RACINE, "icone.png"), "."), (os.path.join(RACINE, "LISEZMOI.txt"), ".")],
     # Visite guidée : photo de la fenêtre (Pillow) affichée dans Tk. PyInstaller écarte d'office
