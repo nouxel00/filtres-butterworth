@@ -3,7 +3,7 @@
 ;
 ;  Il crée dist\Installer_FiltresButterworth_2.0.exe (numéro de la version ci-dessous),
 ;  à distribuer aux utilisateurs.
-;  À compiler avec Inno Setup 6 (https://jrsoftware.org/isdl.php), APRÈS PyInstaller :
+;  À compiler avec Inno Setup 7 ou 6 (https://jrsoftware.org/isdl.php), APRÈS PyInstaller :
 ;  construire_windows.bat fait les deux étapes.
 ;
 ;  L'installation ne demande pas de droits administrateur : le programme va dans le

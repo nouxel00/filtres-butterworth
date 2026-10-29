@@ -53,8 +53,10 @@ python main.py
 
 ## Construire le programme et l'installateur
 
-- **Sur un PC Windows** : double-cliquer sur `construire_windows.bat` (Python 3.10 ou plus
-  récent et [Inno Setup 6](https://jrsoftware.org/isdl.php)). Résultat dans `dist\`.
+- **Sur un PC Windows** : double-cliquer sur `construire_windows.bat`, dans le dossier
+  décompressé (Python 3.12 à 3.15 et [Inno Setup 7 ou 6](https://jrsoftware.org/isdl.php) ;
+  s'ils manquent, le fichier propose de les installer avec winget). Résultat dans `dist\`,
+  qui s'ouvre à la fin.
 - **Automatiquement** : le workflow GitHub Actions [Windows](.github/workflows/windows.yml)
   construit le programme (PyInstaller) et l'installateur (Inno Setup) à chaque envoi sur
   `main`, sur les machines de GitHub. Quand une Release est publiée (étiquette `vX.Y`),

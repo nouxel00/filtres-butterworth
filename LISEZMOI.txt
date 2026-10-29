@@ -75,15 +75,29 @@ une fois un installateur, puis on le distribue.
 
 Construire l'installateur (une seule fois, sur un PC Windows)
 
-  1. Installer Python 3.10 ou plus récent depuis python.org
-     (cocher « Add python.exe to PATH »).
-  2. Installer Inno Setup 6, gratuit : https://jrsoftware.org/isdl.php
-  3. Double-cliquer sur construire_windows.bat. La première fois, il faut une
+  1. Décompresser le fichier .zip (clic droit > Extraire tout) :
+     construire_windows.bat ne fonctionne pas depuis l'intérieur du .zip.
+  2. Installer Python 3.12, 3.13, 3.14 ou 3.15 depuis python.org, par exemple
+     Python 3.13 (cocher « Add python.exe to PATH »). Les bibliothèques de la
+     construction (installation\requirements-construction.txt) n'existent pas
+     pour Python 3.11 ou plus ancien.
+  3. Installer Inno Setup 7, gratuit : https://jrsoftware.org/isdl.php
+     (fichier innosetup-...-x64.exe ; Inno Setup 6 convient aussi). S'il manque
+     Python ou Inno Setup, construire_windows.bat propose de les installer
+     lui-même (winget, pour l'utilisateur seul).
+  4. Double-cliquer sur construire_windows.bat. La première fois, il faut une
      connexion Internet ; la construction prend quelques minutes.
-  4. Résultat, dans le dossier dist :
+  5. Résultat, dans le dossier dist, qui s'ouvre tout seul à la fin avec
+     l'installateur sélectionné :
        - Installer_FiltresButterworth_2.0.exe : l'installateur à partager ;
        - FiltresButterworth\ : le programme autonome, utilisable sans
          installation.
+     Si la fenêtre noire annonce à la fin « il faut Inno Setup », seul le
+     programme autonome est construit : installer Inno Setup, puis relancer
+     construire_windows.bat.
+
+  Sans rien installer : la construction automatique sur GitHub (plus bas)
+  fournit le même installateur.
 
 Ce qu'il faut partager
 
