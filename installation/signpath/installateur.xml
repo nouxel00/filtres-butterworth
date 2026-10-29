@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Configuration d'artefact SignPath « installateur » (slug : installateur).
+  L'artefact envoyé par le workflow est un ZIP qui contient l'installateur créé
+  par Inno Setup, Installer_FiltresButterworth_<version>.exe : il est signé
+  (Authenticode). Le programme qu'il contient a été signé juste avant.
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <zip-file>
+    <pe-file path="Installer_FiltresButterworth_*.exe">
+      <authenticode-sign/>
+    </pe-file>
+  </zip-file>
+</artifact-configuration>

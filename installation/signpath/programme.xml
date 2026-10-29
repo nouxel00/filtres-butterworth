@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Configuration d'artefact SignPath « programme » (slug : programme).
+  L'artefact envoyé par le workflow est un ZIP qui contient seulement
+  FiltresButterworth.exe, construit par PyInstaller : il est signé (Authenticode).
+  Les bibliothèques de Python, numpy, matplotlib… ne sont pas signées : elles ne
+  sont pas construites par ce projet.
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <zip-file>
+    <pe-file path="FiltresButterworth.exe">
+      <authenticode-sign/>
+    </pe-file>
+  </zip-file>
+</artifact-configuration>

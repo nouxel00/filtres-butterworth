@@ -1,0 +1,158 @@
+# =============================================================================
+#  Construction Windows automatique (GitHub Actions)
+#
+#  À chaque envoi sur la branche main : programme autonome (PyInstaller) puis
+#  installateur (Inno Setup), téléchargeables dans l'onglet Actions (artefact
+#  « installateur »).
+#  À chaque étiquette vX.Y (par exemple v2.0) : la même construction, puis une
+#  Release GitHub avec l'installateur. L'étiquette doit porter le numéro de
+#  version du programme (interface.py) et de l'installateur (installateur.iss).
+#
+#  Signature (SignPath) : faite seulement quand les variables SIGNPATH_* du dépôt
+#  sont renseignées (voir installation/signpath/LISEZMOI_SIGNPATH.md) ; sinon le
+#  programme et l'installateur sont construits sans signature.
+# =============================================================================
+name: Windows
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  construire:
+    runs-on: windows-latest
+    env:
+      PYTHONUTF8: "1"
+      SIGNER: ${{ vars.SIGNPATH_ORGANIZATION_ID != '' && github.event_name != 'pull_request' }}
+    steps:
+      - name: Code source
+        uses: actions/checkout@v6
+
+      - name: Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Numéro de version (étiquette, programme, installateur)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $etiquette = "${{ github.ref_name }}".Substring(1)
+          $programme = (Select-String -Path interface.py -Pattern '^VERSION = "(.+)"').Matches[0].Groups[1].Value
+          $installateur = (Select-String -Path installation\installateur.iss -Pattern '#define Version "(.+)"').Matches[0].Groups[1].Value
+          if ($etiquette -ne $programme -or $etiquette -ne $installateur) {
+            Write-Error "Étiquette v$etiquette, programme $programme, installateur $installateur : les numéros diffèrent."
+            exit 1
+          }
+
+      - name: Bibliothèques
+        run: python -m pip install -r installation/requirements-construction.txt
+
+      - name: Vérification du moteur de calcul
+        run: python moteur.py
+
+      - name: Icône et programme autonome (PyInstaller)
+        run: |
+          python installation/creer_icones.py
+          python -m PyInstaller --noconfirm --clean installation/FiltresButterworth.spec
+
+      # --- Signature du programme, avant de l'enfermer dans l'installateur --------------
+      - name: Programme à signer
+        if: env.SIGNER == 'true'
+        id: programme
+        uses: actions/upload-artifact@v6
+        with:
+          name: programme-non-signe
+          path: dist/FiltresButterworth/FiltresButterworth.exe
+          if-no-files-found: error
+
+      - name: Signature du programme (SignPath)
+        if: env.SIGNER == 'true'
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: programme
+          github-artifact-id: ${{ steps.programme.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signe/programme
+
+      - name: Programme signé, remis à sa place
+        if: env.SIGNER == 'true'
+        shell: pwsh
+        run: Copy-Item signe/programme/FiltresButterworth.exe dist/FiltresButterworth/FiltresButterworth.exe -Force
+
+      # --- Installateur ------------------------------------------------------------------
+      - name: Installateur (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup --no-progress -y }
+          & $iscc installation\installateur.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Installateur à signer
+        if: env.SIGNER == 'true'
+        id: installateur
+        uses: actions/upload-artifact@v6
+        with:
+          name: installateur-non-signe
+          path: dist/Installer_FiltresButterworth_*.exe
+          if-no-files-found: error
+
+      - name: Signature de l'installateur (SignPath)
+        if: env.SIGNER == 'true'
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: installateur
+          github-artifact-id: ${{ steps.installateur.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signe/installateur
+
+      - name: Installateur signé, remis à sa place
+        if: env.SIGNER == 'true'
+        shell: pwsh
+        run: Copy-Item signe/installateur/Installer_FiltresButterworth_*.exe dist/ -Force
+
+      - name: Installateur (artefact téléchargeable)
+        uses: actions/upload-artifact@v6
+        with:
+          name: installateur
+          path: dist/Installer_FiltresButterworth_*.exe
+          if-no-files-found: error
+
+  publier:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: construire
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Installateur construit
+        uses: actions/download-artifact@v7
+        with:
+          name: installateur
+          path: dist
+
+      - name: Release GitHub
+        uses: softprops/action-gh-release@v3
+        with:
+          name: Filtres de Butterworth ${{ github.ref_name }}
+          files: dist/Installer_FiltresButterworth_*.exe
+          fail_on_unmatched_files: true
+          body: |
+            Installateur Windows : `Installer_FiltresButterworth_*.exe` ci-dessous (aucun droit administrateur demandé).
+            Les nouveautés de la version sont dans le programme (Aide > Nouveautés) et dans LISEZMOI.txt, partie 6.

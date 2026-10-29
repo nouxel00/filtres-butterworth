@@ -1,0 +1,488 @@
+﻿SYNTHÈSE DE FILTRES DE BUTTERWORTH - CELLULES DE SALLEN & KEY (K = 1)
+======================================================================
+
+Logiciel de synthèse de filtres de Butterworth : à partir d'un gabarit, il
+calcule l'ordre minimal, la fonction de transfert normalisée et la fonction de
+transfert réelle, trace les deux diagrammes de Bode et donne les valeurs des
+résistances et condensateurs des cellules de Sallen & Key à gain unité, jusqu'au
+schéma de câblage avec des µA741.
+
+Logiciel libre, sous licence MIT (fichier LICENSE). Code source :
+https://github.com/nouxel00/filtres-butterworth
+
+
+1. LANCER LE PROGRAMME DEPUIS PYTHON
+------------------------------------
+
+  1. Installer Python 3.8 ou plus récent (Tkinter est inclus sous Windows et
+     macOS).
+  2. Installer les deux bibliothèques nécessaires :
+
+         pip install numpy matplotlib
+
+  3. Lancer le programme depuis ce dossier :
+
+         python main.py
+
+  Sous Linux, installer Tkinter si besoin :  sudo apt install python3-tk
+
+
+2. ORGANISATION DES FICHIERS
+----------------------------
+
+  main.py                  Point d'entrée : ouvre la fenêtre.
+  moteur.py                Tous les calculs (étapes 1 à 6 de la synthèse).
+                           Utilisable seul : « python moteur.py » affiche le
+                           rapport de deux exemples de vérification.
+  graphes.py               Diagrammes de Bode avec gabarit, schémas des
+                           cellules, schéma de câblage, formules.
+  interface.py             Fenêtre, saisie et affichage des résultats.
+  compte_rendu.py          Compte rendu PDF (menu Fichier).
+  guide.py                 Cours « Comprendre Sallen & Key » (menu Aide, F2) :
+                           textes, formules et figures des dix chapitres.
+  netlist.py               Netlists pour LTspice et PSpice (onglet Câblage).
+  construire_windows.bat   Construit le programme autonome et l'installateur
+                           Windows (voir la partie 3).
+  .github\workflows\       Construction automatique sur GitHub (windows.yml) :
+                           programme, installateur, signature, Release.
+  installation\            Recette PyInstaller, script de l'installateur
+                           (Inno Setup), création des icônes, image de
+                           l'écran de démarrage (splash.png), versions des
+                           bibliothèques (requirements-construction.txt),
+                           signature SignPath (dossier signpath).
+  icone.ico, icone.png     Icône du programme (créées par
+                           installation\creer_icones.py).
+  README.md, docs\         Présentation du projet sur GitHub (politique de
+                           signature, confidentialité) et ses images.
+  LICENSE                  Licence MIT.
+
+
+3. DISTRIBUER LE LOGICIEL (WINDOWS, AVEC UNE ICÔNE)
+---------------------------------------------------
+
+Les utilisateurs n'ont besoin ni de Python ni des bibliothèques : on construit
+une fois un installateur, puis on le distribue.
+
+Construire l'installateur (une seule fois, sur un PC Windows)
+
+  1. Installer Python 3.10 ou plus récent depuis python.org
+     (cocher « Add python.exe to PATH »).
+  2. Installer Inno Setup 6, gratuit : https://jrsoftware.org/isdl.php
+  3. Double-cliquer sur construire_windows.bat. La première fois, il faut une
+     connexion Internet ; la construction prend quelques minutes.
+  4. Résultat, dans le dossier dist :
+       - Installer_FiltresButterworth_2.0.exe : l'installateur à partager ;
+       - FiltresButterworth\ : le programme autonome, utilisable sans
+         installation.
+
+Ce qu'il faut partager
+
+  - Un seul fichier suffit : Installer_FiltresButterworth_2.0.exe. Il contient
+    le programme, Python, les bibliothèques et l'icône (clé USB, Drive...).
+  - Ne partagez pas seul le fichier FiltresButterworth.exe du dossier
+    dist\FiltresButterworth : il a besoin du dossier _internal placé à côté de
+    lui. Sans installateur, partagez tout le dossier dist\FiltresButterworth,
+    compressé en .zip : il suffit de le décompresser et de lancer
+    FiltresButterworth.exe (clic droit > Envoyer vers > Bureau pour créer un
+    raccourci).
+
+Installer sur un autre ordinateur
+
+  - Lancer Installer_FiltresButterworth_2.0.exe : aucun droit administrateur
+    n'est demandé. Le logiciel apparaît avec son icône dans le menu Démarrer et,
+    si la case est cochée, sur le bureau. Les fichiers .filtre (filtres
+    enregistrés) s'ouvrent alors d'un double-clic. Le logiciel se désinstalle
+    depuis Paramètres > Applications.
+  - Le programme n'est pas signé : Windows peut afficher « Windows a protégé
+    votre ordinateur ». Cliquer sur « Informations complémentaires », puis sur
+    « Exécuter quand même ». Certains antivirus se méfient aussi des programmes
+    construits avec PyInstaller (fausse alerte). Une signature gratuite par la
+    SignPath Foundation est prévue : voir plus bas.
+  - Démarrage : le programme installé affiche un écran de démarrage dès le
+    double-clic, pendant le chargement de Python et des bibliothèques ; il se
+    ferme quand la fenêtre est prête, avec le filtre de la dernière séance
+    déjà recalculé. Les graphiques ont besoin de la liste des polices de
+    l'ordinateur, longue à dresser (plusieurs secondes sous Windows) : elle
+    est dressée une fois pour toutes à la fin de l'installation
+    (« Préparation du premier lancement », c'est-à-dire
+    FiltresButterworth.exe --preparer), puis gardée dans
+    %LOCALAPPDATA%\FiltresButterworth\matplotlib. La désinstallation
+    l'efface ; effacée à la main, elle est refaite au lancement suivant.
+
+Nouvelle version : changer le numéro dans interface.py (VERSION, affiché par
+Aide > À propos) et dans installation\installateur.iss (Version), décrire ses
+nouveautés dans la partie 6 de ce fichier, puis relancer
+construire_windows.bat ; le nouvel installateur remplace l'ancienne version.
+Au premier lancement de la nouvelle version, le programme affiche une fois ses
+nouveautés (partie 6).
+
+Construction automatique sur GitHub
+
+  - Le dépôt https://github.com/nouxel00/filtres-butterworth construit le
+    programme et l'installateur à chaque envoi sur la branche main, sur les
+    machines de GitHub (workflow .github\workflows\windows.yml). L'installateur
+    se télécharge dans l'onglet Actions (artefact « installateur »).
+  - Une étiquette vX.Y (par exemple v2.0) publie l'installateur dans une
+    Release. Elle doit porter le même numéro que VERSION (interface.py) et
+    Version (installation\installateur.iss), sinon la construction s'arrête.
+  - Signature : la SignPath Foundation signe gratuitement les logiciels libres
+    construits ainsi. La demande et la mise en place sont décrites dans
+    installation\signpath\LISEZMOI_SIGNPATH.md. Tant que les variables
+    SIGNPATH_* du dépôt ne sont pas renseignées, le workflow construit sans
+    signer.
+
+En cas de problème sur le programme installé, le détail des erreurs est écrit
+dans le fichier %TEMP%\FiltresButterworth.log.
+
+macOS ou Linux : installer Python, puis « pip install numpy matplotlib » et
+lancer « python3 main.py ». La recette PyInstaller fonctionne aussi, mais elle
+doit être lancée sur le système visé.
+
+
+4. UTILISATION
+--------------
+
+  - Choisir le type de filtre, saisir le gabarit et la valeur de référence, puis
+    « Calculer le filtre » (ou la touche Entrée). La colonne de gauche se lit de
+    haut en bas : Type de filtre, Gabarit (croquis puis champs sur deux
+    colonnes, chacun avec son unité), Composants (R0 ou C0, puis les séries des
+    résistances et des condensateurs), et la section repliable Options. Chaque
+    type de filtre garde ses propres valeurs. Au premier lancement, le gabarit
+    est vide : seules les valeurs de référence R0 = 10 kΩ et C0 = 10 nF sont
+    proposées (modifiables). Tant qu'aucun filtre n'est calculé, la zone des
+    résultats rappelle les étapes à suivre et les exports du menu Fichier sont
+    grisés.
+
+  - Visite guidée : au premier lancement, huit bulles présentent tour à tour
+    les zones de la fenêtre (type de filtre, gabarit, composants, calcul,
+    résultats, onglets, menus). Le reste de la fenêtre est assombri et rien
+    n'est modifié. Flèches ou Entrée pour avancer, Échap pour quitter. Elle se
+    relance depuis le menu Aide ou le lien « Découvrir la fenêtre » de
+    l'accueil.
+
+  - Le bouton « Calculer le filtre » reste toujours visible en bas du panneau.
+    Pendant le calcul, il affiche « Calcul en cours... » ; ensuite la ligne
+    d'état indique « Calcul terminé à 12:10:16 (n = 5) ». Si une valeur est
+    modifiée sans relancer le calcul, elle indique « Saisie modifiée : relancez
+    le calcul ».
+
+  - Options (section repliable sous Composants, dépliée d'un clic ou au clavier
+    avec Espace) : le nombre d'options actives s'affiche à droite du titre, et
+    la section reste dépliée ou repliée d'un lancement à l'autre. On y trouve «
+    Associer deux valeurs si besoin », pour le passe-bande « Pont diviseur
+    d'entrée » et « Commencer par la cellule passe-haut », et « Calcul
+    automatique » : le filtre est alors recalculé une demi-seconde après la
+    dernière frappe. Une saisie incomplète ou incorrecte est ignorée jusqu'à la
+    touche Entrée ou au clic sur « Calculer le filtre », qui affichent l'erreur.
+    Le choix est gardé pour les prochains lancements.
+
+  - Les valeurs acceptent la virgule et les préfixes : 2400, 2,4k, 2.4 kHz, 10n,
+    4k7.
+
+  - Croquis du gabarit (sous le titre « Gabarit ») : les zones interdites à
+    l'échelle, fréquences en échelle logarithmique. Il suit la frappe et montre
+    en bleu le paramètre en cours de saisie ; une incohérence (fa avant fp pour
+    un passe-bas, par exemple) est signalée tout de suite.
+
+  - Onglets : Bode normalisé (prototype et gabarit réduit), Bode réel (gabarit
+    de départ), Étapes du calcul, Composants (une carte par cellule, avec son
+    schéma et ses composants), Câblage (montage réel complet). L'onglet affiché
+    est en bleu. Changer d'onglet : clic, Ctrl Tab (suivant), Ctrl Maj Tab
+    (précédent), ou Ctrl 1 à Ctrl 5 (menu Affichage). Sur un petit écran ou avec
+    un grand texte, « Étapes du calcul » devient « Étapes » et les onglets
+    passent au besoin sur deux lignes : ils restent tous visibles. Si la place
+    manque, le contenu de l'onglet défile à la molette au lieu d'être écrasé.
+
+  - Onglet « Étapes du calcul » : les six étapes de la synthèse, rédigées comme
+    une copie de devoir. Chaque résultat suit le même schéma : la formule
+    littérale, l'application numérique (A.N.), puis le résultat encadré avec la
+    formule qui y mène. Les applications numériques gardent 6 chiffres
+    significatifs ; les résultats sont arrondis à 4 chiffres (4 décimales pour m
+    et q). 1 normalisation du gabarit (k et 1/k, et f0, B pour les filtres de
+    bande) ; 2 approximation de Butterworth et ε ; 3 ordre minimal ; 4 fonction
+    de transfert normalisée (m de chaque cellule) ; 5 pulsation de référence,
+    transposition et fonction de transfert réelle, sous sa forme finale puis
+    cellule par cellule ; 6 valeurs de référence (C0 ou R0), puis m, q et chaque
+    composant de chaque cellule, le pont diviseur s'il est coché, et le tableau
+    récapitulatif. Si une série E est choisie, la normalisation vient ensuite
+    dans un paragraphe à part : tableau des valeurs normalisées et écart le plus
+    grand avec les valeurs calculées. Puis la vérification du gabarit, avec les
+    valeurs normalisées s'il y en a. « Copier le texte » colle le tout dans un
+    compte rendu (les résultats y sont marqués d'un trait épais à gauche) ; le
+    compte rendu PDF et le rapport texte reprennent la même présentation.
+
+  - Onglet « Composants » : une ligne résume le montage (nombre de cellules,
+    séries, options). À gauche, une carte par cellule, dans l'ordre du câblage
+    (nom, fréquence, montage, Q, m et q) ; un clic sur une carte, ou les
+    flèches du clavier, affiche à droite le schéma de la cellule et le tableau
+    de ses composants : repère, rôle, valeur à câbler et, avec une série E,
+    valeur calculée. Avec des valeurs normalisées, un seul message dit si le
+    gabarit reste respecté et donne l'écart le plus grand ; s'il ne l'est plus,
+    « Que faire ? » explique pourquoi et ce qu'on peut changer. Pour le
+    passe-bande, le gain du montage et le pont diviseur sont rappelés au-dessus
+    des cartes. « Copier le tableau » copie les composants de toutes les
+    cellules (se colle dans Excel ou Word). Dans une petite fenêtre, les cartes
+    passent au-dessus du schéma.
+
+  - Corriger les valeurs (onglet Composants, quand le gabarit n'est plus
+    respecté avec les valeurs normalisées) : un clic cherche d'autres valeurs
+    normalisées qui le respectent, sans jamais changer R0 ni C0. Pour chaque
+    composant, la valeur du dessous ou du dessus dans sa série, ou une autre
+    association ; si cela ne suffit pas, les associations de deux valeurs, puis
+    une série plus fine (E6, puis E12, puis E24). Les valeurs trouvées sont
+    appliquées tout de suite : le message dit ce qui a changé (séries, options
+    et composants, avant → après) et les gains obtenus ; les valeurs changées
+    sont en bleu dans le tableau, et le schéma, le câblage, le Bode réel, les
+    étapes du calcul et les exports les reprennent. « Annuler la correction »
+    revient aux valeurs d'avant. Les valeurs ajustées sont gardées dans le
+    fichier .filtre ; elles ne valent que pour le calcul qui les a produites
+    (un autre gabarit, R0 ou C0 les écarte). Si rien ne convient, même en E24
+    avec associations, le programme le dit : il reste à garder les valeurs
+    calculées ou à laisser un peu de marge au gabarit.
+
+  - Infobulles : laisser la souris un instant sur un élément affiche une
+    explication (types de filtre, noms des champs fp, fa, Gp…, résultats du
+    bandeau k, ε, ordre…, options, séries E, onglets avec leur raccourci,
+    indicateur « Gabarit respecté »).
+
+  - Diagrammes de Bode : survoler le graphique affiche la fréquence, le gain et
+    la phase. Pour une valeur précise, taper la fréquence dans le champ « f = »
+    sous le graphique (« Ω = » pour le Bode normalisé) puis Entrée, ou cliquer
+    sur le graphique : le gain et la phase exacts s'affichent et un repère est
+    posé. Échap efface le repère ; il reste en place après un nouveau calcul,
+    pour comparer deux réglages.
+
+  - Bode réel, case « µA741 réel » (aussi dans le menu Affichage) : ajoute en
+    violet pointillé la réponse du montage avec de vrais µA741 (gain 2·10^5,
+    produit gain-bande 1 MHz), avec les mêmes valeurs de composants que le
+    montage affiché. La légende indique si le gabarit reste respecté et, sinon,
+    si des TL081 (3 MHz, même brochage) suffiraient. Le choix est gardé pour
+    les prochains lancements.
+
+  - Bode réel, case « Dispersion » (aussi dans le menu Affichage) : 300 montages
+    sont tirés au hasard, chaque composant dans sa tolérance (celle de la série
+    choisie, sinon R ±5 % et C ±10 %). La zone colorée montre l'étendue de
+    leurs gains ; la légende donne la part des montages qui respectent le
+    gabarit et la limite la plus souvent dépassée. Un filtre calculé au plus
+    juste (gain exactement Gp en fp) échoue souvent : pour un vrai montage,
+    prévoir une petite marge sur le gabarit.
+
+  - Menu Affichage : taille du texte normale, grande ou très grande (100, 115
+    ou 130 %). Toute la fenêtre suit : textes, graphiques et schémas.
+    Raccourcis : Ctrl + (agrandir), Ctrl - (réduire), Ctrl 0 (taille normale).
+    Le choix est gardé pour les prochains lancements.
+
+  - Séries des composants (listes « Résistances » et « Condensateurs », sous R0
+    et C0) : au choix « Calculées », E6 (±20 %), E12 (±10 %) ou E24 (±5 %), par
+    exemple E12 pour les résistances et E6 pour les condensateurs. Un clic ouvre
+    la liste ; au clavier, les flèches haut et bas changent de série. L'option «
+    Associer deux valeurs si besoin » réalise une valeur avec deux composants
+    (résistances en série, condensateurs en parallèle) quand une valeur seule
+    s'écarte de plus de 1 %. Le tableau, les schémas, le Bode réel (courbe
+    orange) et l'indicateur de gabarit utilisent alors ces valeurs.
+
+  - Passe-bande, option « Pont diviseur d'entrée » : cochée, la résistance
+    d'entrée de la première cellule passe-bas est remplacée par deux résistances
+    (l'une côté entrée, l'autre vers la masse) qui ramènent le gain du montage à
+    0 dB. Décochée (par défaut), les cellules restent à gain unité et le montage
+    amplifie la bande passante : par exemple +29,9 dB pour un passe-bande
+    d'ordre 4 centré sur 1 kHz avec B = 0,19, dont la sortie sature alors
+    au-delà d'environ 0,4 V crête en entrée. Avec une série E, les deux
+    résistances du pont sont normalisées comme les autres : le gain n'est plus
+    exactement 0 dB (−0,70 dB en E12 dans l'exemple ci-dessus, −0,08 dB avec les
+    associations), et le contrôle du gabarit, le Bode réel et la dispersion en
+    tiennent compte.
+
+  - Passe-bande, option « Commencer par la cellule passe-haut » : chaque paire
+    est câblée en commençant par sa cellule passe-haut (1 bis, puis 1). Par
+    défaut, la cellule passe-bas vient d'abord (1, puis 1 bis). La fonction de
+    transfert est la même ; seuls le câblage et la place du pont diviseur
+    changent. Avec le pont, commencer par le passe-haut fait amplifier le
+    premier étage avant le pont : dans l'exemple ci-dessus, la note « Entrée
+    maximale avant saturation » de l'onglet Câblage passe de 13 V à environ 1,75
+    V crête.
+
+  - Onglet « Câblage » : schéma complet du montage réel avec des µA741 (numéros
+    de broches, alimentation ±15 V), pont diviseur d'entrée si l'option est
+    cochée, brochage du circuit, nomenclature (valeur, quantité, repères) et
+    notes de câblage. Les associations y sont dessinées telles qu'on les câble.
+    « Enregistrer le schéma... » produit une feuille de câblage en PNG, PDF ou
+    SVG ; « Copier la nomenclature » se colle dans Excel.
+
+  - Netlist SPICE (lien « Netlist SPICE... » de l'onglet Câblage, ou menu
+    Fichier > Exporter la netlist LTspice / PSpice) : un fichier .cir à ouvrir
+    directement dans LTspice ou dans PSpice (Fichier > Ouvrir, puis lancer la
+    simulation). C'est le montage affiché : mêmes repères, mêmes valeurs
+    (calculées ou normalisées, associations et valeurs ajustées comprises), pont
+    diviseur d'entrée et suiveurs ; l'entrée est le nœud E (source alternative
+    de 1 V) et la sortie le nœud S. Les amplificateurs sont décrits par un
+    modèle linéaire à un pôle, sans transistor (gain 2·10^5, produit gain-bande
+    1 MHz, comme la courbe « µA741 réel ») : la netlist reste ainsi dans les
+    limites des versions étudiantes de PSpice (64 nœuds, 10 transistors, 2
+    amplificateurs de bibliothèque). Le programme compte les nœuds et prévient
+    si un très grand montage dépasse 64. Un modèle idéal est fourni aussi
+    (remplacer AOP_1POLE par AOP_IDEAL). Pour LTspice, les gains aux fréquences
+    du gabarit sont mesurés (View > SPICE Error Log) ; pour PSpice, tracer
+    DB(V(S)). Les netlists ont été vérifiées avec le simulateur ngspice : même
+    gain que celui calculé par le programme (courbe « µA741 réel »), à 0,001 dB
+    près.
+
+  - Retrouver son travail : à la fermeture, la saisie (type de filtre, valeurs,
+    séries, options, onglet) est gardée ; le programme reprend au même endroit
+    au lancement suivant. Menu Fichier : Nouveau filtre (Ctrl+N : gabarit vide,
+    options par défaut), Ouvrir un filtre (Ctrl+O), Enregistrer le filtre
+    (Ctrl+S) et Enregistrer sous (Ctrl+Maj+S). Un fichier .filtre par projet, à
+    rouvrir plus tard ou à envoyer à un collègue ; son nom s'affiche dans la
+    barre de titre et sert de début aux noms des fichiers exportés.
+
+  - Quitter (menu Fichier, Ctrl+Q ou la croix de la fenêtre) demande toujours
+    confirmation. Si le filtre n'est pas enregistré (jamais enregistré, ou
+    modifié depuis), le programme le signale et propose : Enregistrer, Ne pas
+    enregistrer ou Annuler. La même question est posée avant Nouveau filtre et
+    Ouvrir un filtre, qui remplacent la saisie en cours.
+
+  - Compte rendu PDF (menu Fichier, Ctrl+P) : un document A4 prêt à joindre à un
+    rapport ou à un dossier. Gabarit et résultats, vérification du gabarit,
+    valeurs des composants, diagrammes de Bode (avec les options affichées :
+    valeurs normalisées, µA741 réel, dispersion), étapes du calcul avec les
+    formules, schéma de chaque cellule et schéma de câblage avec la
+    nomenclature. Le PDF s'ouvre une fois créé.
+
+  - Menu Fichier, autres exports : rapport texte (nomenclature comprise),
+    diagrammes de Bode et schéma de câblage (PNG, PDF ou SVG), netlist pour
+    LTspice ou PSpice.
+
+  - Menu Aide : la visite guidée, ce mode d'emploi (F1), le petit cours
+    « Comprendre Sallen & Key » (F2), la liste des raccourcis clavier, les
+    nouveautés de la version (affichées d'elles-mêmes une fois, au premier
+    lancement qui suit une mise à jour) et la version du programme
+    (À propos).
+
+  - Comprendre Sallen & Key (menu Aide ou F2, lien « Comment fonctionne cette
+    cellule ? » de l'onglet Composants, lien de l'accueil) : un petit cours pour
+    débutant, en dix chapitres progressifs. 1 filtrer un signal (gain, décibels,
+    Bode, gabarit) ; 2 résistance et condensateur (impédance) ; 3 le filtre RC ;
+    4 pourquoi il faut plus qu'un RC ; 5 l'amplificateur opérationnel en
+    suiveur ; 6 la cellule de Sallen & Key passe-bas, régime par régime ; 7 f0
+    et Q, les deux réglages d'une cellule ; 8 Butterworth : des cellules pour
+    une courbe plate ; 9 passe-haut et passe-bande (pont diviseur, cellule de
+    Rauch) ; 10 du calcul au montage réel (R0 et C0, séries E, correction, µA741
+    réel). Chaque chapitre a ses schémas ou ses courbes, ses formules et un
+    encadré « À retenir » ; quand un filtre est calculé, un encadré « Dans votre
+    filtre » le relie au montage affiché. Flèches gauche et droite : chapitre
+    précédent ou suivant ; « Copier le chapitre » le copie en texte.
+
+
+5. CONVENTIONS DE CALCUL
+------------------------
+
+  - Ordre : n ≥ log[(10^(-Ga/10) - 1) / (10^(-Gp/10) - 1)] / (2·log(1/k)),
+    arrondi à l'entier supérieur. Ondulation : ε² = 10^(-Gp/10) - 1, avec ε = 1
+    exactement lorsque Gp = -3 dB (coupure à -3 dB en Ω = 1). Pour un autre Gp,
+    la coupure à -3 dB est décalée en Ωc = ε^(-1/n).
+
+  - Composants : R0·C0·ω = 1 (ωp pour le passe-bas et le passe-haut, ω0 pour le
+    passe-bande), puis les coefficients m et q de chaque cellule, déduits de sa
+    fréquence propre et de son facteur de qualité Q.
+
+  - Repères des composants : comme sur un vrai montage, ils sont numérotés
+    d'un bout à l'autre (R1, R2, R3… et C1, C2, C3…), sans répétition d'une
+    cellule à l'autre. Dans chaque cellule : d'abord les deux éléments en série,
+    dans l'ordre du signal, puis la contre-réaction (en haut du schéma), puis
+    l'élément vers la masse (en bas). Cellule passe-bas : R1 et R2 en série, C1
+    en contre-réaction (q·C0), C2 vers la masse (m·C0) ; cellule passe-haut : C1
+    et C2 en série, R1 en contre-réaction (R0/q), R2 vers la masse (R0/m) ; la
+    cellule suivante continue avec R3, R4, C3, C4… Sans association, les
+    numéros impairs sont en haut et les pairs en bas. Une association de deux
+    composants reçoit deux numéros qui se suivent (« R3 + R4 ») : les repères
+    suivants sont décalés d'autant. Le pont diviseur, s'il est coché, est
+    numéroté dans sa cellule (résistance côté entrée, puis résistance série,
+    puis résistance vers la masse).
+
+  - m et q sont affichés arrondis à 4 décimales (les calculs gardent toute la
+    précision).
+
+  - Correction du gabarit (« Corriger les valeurs ») : pour chaque composant,
+    jusqu'à sept réalisations sont essayées (la valeur normalisée la plus
+    proche, celles du dessous et du dessus, d'autres valeurs à moins de 12 % et,
+    si elles sont permises, des associations à moins de 3 %). Cellule par
+    cellule, toutes les combinaisons sont calculées et la meilleure est gardée,
+    jusqu'à ce que plus rien ne s'améliore. La marge la plus faible sur le
+    gabarit doit être positive ; au-delà de 0,1 dB de marge, on préfère changer
+    le moins de composants possible. Le contrôle porte sur toute la bande
+    passante (pas de creux sous Gp, pas de bosse de plus de 0,3 dB au-dessus de
+    0 dB) et sur la bande atténuée. Les séries choisies sont essayées d'abord,
+    puis les associations, puis des séries plus fines. R0 et C0 ne changent
+    jamais.
+
+  - Passe-bande : chaque facteur du second degré du prototype donne une paire de
+    cellules, i (passe-bas) et i bis (passe-haut), calculées pour la valeur
+    exacte de B. Pour un ordre impair, la dernière cellule est un passe-bande de
+    Rauch, car une cellule de Sallen & Key à gain unité ne peut pas dépasser Q =
+    0,5.
+
+  - Passe-bande : chaque cellule ayant un gain unité, le montage amplifie la
+    bande passante. Le programme indique ce gain et le pont diviseur (option)
+    qui le ramène à 0 dB. Le contrôle du gabarit porte sur la réponse ramenée à
+    0 dB à f0, avec ou sans pont : le gabarit d'un passe-bande est relatif au
+    gain dans la bande.
+
+  - Coupe-bande : fonctions de transfert et diagrammes seulement (non réalisable
+    avec des cellules de Sallen & Key). La transposition utilise B = (fp+ -
+    fp-)/f0, ce qui place le gain Gp exactement en fp- et fp+.
+
+  - Montage réel : une cellule RC ou CR suivie d'une autre cellule reçoit un
+    suiveur (µA741 monté en suiveur), car le calcul suppose des étages isolés.
+    La note sur le µA741 réel et la courbe violette du Bode réel utilisent un
+    modèle à un pôle (gain 2·10^5, produit gain-bande 1 MHz) : elles indiquent
+    l'écart avec l'amplificateur idéal et, s'il le faut, le résultat avec un
+    TL081 (même brochage, 3 MHz). Les cellules à Q élevé du passe-bande y sont
+    sensibles.
+
+
+6. NOUVEAUTÉS DE LA VERSION 2.0
+-------------------------------
+
+  - Logiciel neutre : les textes ne renvoient plus à un cours particulier ; les
+    méthodes et les conventions de calcul sont expliquées dans le programme.
+
+  - Étapes du calcul rédigées comme une copie : pour chaque résultat, la
+    formule littérale, l'application numérique, puis le résultat encadré avec
+    la formule qui y mène. Le compte rendu PDF et le rapport texte suivent la
+    même présentation.
+
+  - Colonne de saisie épurée : types de filtre en tuiles, gabarit sur deux
+    colonnes avec les unités, listes des séries de composants, options dans
+    une section repliable.
+
+  - Onglet Composants épuré : une carte par cellule ; pour la cellule choisie,
+    son schéma et le tableau de ses composants ; un seul message sur les
+    valeurs normalisées, détaillé par « Que faire ? ».
+
+  - Corriger les valeurs : quand le gabarit n'est plus respecté avec les
+    valeurs normalisées, un clic trouve d'autres valeurs qui le respectent,
+    sans jamais changer R0 ni C0 (valeur du dessous ou du dessus, autre
+    association, puis associations ou série plus fine). Les valeurs changées
+    sont en bleu et reprises partout ; la correction s'annule d'un clic.
+
+  - Pont diviseur du passe-bande : avec une série E, ses deux résistances
+    sont normalisées comme les autres, et le contrôle du gabarit, le Bode
+    réel et la dispersion en tiennent compte (auparavant, le pont était
+    supposé exact).
+
+  - Comprendre Sallen & Key (menu Aide ou F2) : un petit cours pour débutant,
+    en dix chapitres progressifs, avec schémas, courbes et formules, relié au
+    filtre calculé.
+
+  - Netlists pour LTspice et PSpice (version étudiante comprise) : le montage
+    réel prêt à simuler, avec les mêmes repères et les mêmes valeurs (menu
+    Fichier ou onglet Câblage).
+
+  - Démarrage plus rapide : un écran de démarrage s'affiche dès le
+    double-clic ; la liste des polices, préparée par l'installateur, est
+    gardée d'un lancement à l'autre au lieu d'être refaite à chaque fois.
+
+  - Divers : l'indicateur « Gabarit non respecté » mène à l'onglet Composants ;
+    ces nouveautés sont dans le menu Aide et s'affichent d'elles-mêmes une
+    fois après une mise à jour ; la fenêtre se ferme sans message d'erreur
+    dans la console ; textes et mises en page revus pour les petites fenêtres.

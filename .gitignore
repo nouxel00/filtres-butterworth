@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.pyc
+
+# Construction (PyInstaller, Inno Setup, construire_windows.bat)
+build/
+dist/
+.venv-construction/
+
+# Signature (workflow GitHub)
+signe/

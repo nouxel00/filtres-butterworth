@@ -1,0 +1,7 @@
+# Bibliothèques du programme (numpy, matplotlib, pillow) et de sa construction (pyinstaller),
+# dans les versions vérifiées ensemble. Utilisé par construire_windows.bat et par la
+# construction automatique sur GitHub (.github/workflows/windows.yml).
+numpy==2.5.4
+matplotlib==3.11.2
+pillow==13.0.0
+pyinstaller==6.22.3
