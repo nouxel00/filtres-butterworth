@@ -16,6 +16,7 @@ Organisation du programme :
         saisie.py    la colonne de saisie (type, gabarit, séries)
         panneaux.py  les résultats (bandeau, onglets, accueil)
         aide.py      le menu Aide, la visite guidée, la fenêtre du cours
+        mise_a_jour.py  les nouvelles versions (recherche, installation)
     compte_rendu.py  le compte rendu PDF (menu Fichier)
     netlist.py    les netlists LTspice et PSpice (onglet Câblage)
     guide.py      le contenu du cours « Comprendre Sallen & Key » (F2)

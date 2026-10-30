@@ -80,5 +80,5 @@ signature par la phrase demandée par SignPath :
 > Free code signing provided by [SignPath.io](https://signpath.io), certificate by
 > [SignPath Foundation](https://signpath.org)
 
-puis publier une nouvelle Release (par exemple l'étiquette `v2.0.1`, après avoir mis le
+puis publier une nouvelle Release (par exemple l'étiquette `v2.1.1`, après avoir mis le
 même numéro dans `commun.py` et `installation/installateur.iss`).

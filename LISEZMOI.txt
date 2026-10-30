@@ -47,6 +47,9 @@ https://github.com/nouxel00/filtres-butterworth
                            composants, câblage) et accueil.
   aide.py                  Menu Aide : mode d'emploi, nouveautés, visite
                            guidée, fenêtre du cours.
+  mise_a_jour.py           Nouvelles versions : recherche sur GitHub (avec
+                           l'accord de l'utilisateur), téléchargement vérifié
+                           et installation (menu Aide, partie 4).
   compte_rendu.py          Compte rendu PDF (menu Fichier).
   guide.py                 Cours « Comprendre Sallen & Key » (menu Aide, F2) :
                            textes, formules et figures des dix chapitres.
@@ -89,7 +92,7 @@ Construire l'installateur (une seule fois, sur un PC Windows)
      connexion Internet ; la construction prend quelques minutes.
   5. Résultat, dans le dossier dist, qui s'ouvre tout seul à la fin avec
      l'installateur sélectionné :
-       - Installer_FiltresButterworth_2.0.exe : l'installateur à partager ;
+       - Installer_FiltresButterworth_2.1.exe : l'installateur à partager ;
        - FiltresButterworth\ : le programme autonome, utilisable sans
          installation.
      Si la fenêtre noire annonce à la fin « il faut Inno Setup », seul le
@@ -101,7 +104,7 @@ Construire l'installateur (une seule fois, sur un PC Windows)
 
 Ce qu'il faut partager
 
-  - Un seul fichier suffit : Installer_FiltresButterworth_2.0.exe. Il contient
+  - Un seul fichier suffit : Installer_FiltresButterworth_2.1.exe. Il contient
     le programme, Python, les bibliothèques et l'icône (clé USB, Drive...).
   - Ne partagez pas seul le fichier FiltresButterworth.exe du dossier
     dist\FiltresButterworth : il a besoin du dossier _internal placé à côté de
@@ -112,7 +115,7 @@ Ce qu'il faut partager
 
 Installer sur un autre ordinateur
 
-  - Lancer Installer_FiltresButterworth_2.0.exe : aucun droit administrateur
+  - Lancer Installer_FiltresButterworth_2.1.exe : aucun droit administrateur
     n'est demandé. Le logiciel apparaît avec son icône dans le menu Démarrer et,
     si la case est cochée, sur le bureau. Les fichiers .filtre (filtres
     enregistrés) s'ouvrent alors d'un double-clic. Le logiciel se désinstalle
@@ -135,10 +138,12 @@ Installer sur un autre ordinateur
 
 Nouvelle version : changer le numéro dans commun.py (VERSION, affiché par
 Aide > À propos) et dans installation\installateur.iss (Version), décrire ses
-nouveautés dans la partie 6 de ce fichier, puis relancer
-construire_windows.bat ; le nouvel installateur remplace l'ancienne version.
-Au premier lancement de la nouvelle version, le programme affiche une fois ses
-nouveautés (partie 6).
+nouveautés dans la partie 6 de ce fichier, puis la publier sur GitHub (voir
+plus bas). Les programmes déjà installés (version 2.1 ou plus récente) la
+proposent alors d'eux-mêmes à leurs utilisateurs (partie 4, « Mises à
+jour »). construire_windows.bat construit le même installateur sur ce PC ; le
+nouvel installateur remplace l'ancienne version. Au premier lancement de la
+nouvelle version, le programme affiche une fois ses nouveautés (partie 6).
 
 Construction automatique sur GitHub
 
@@ -147,10 +152,13 @@ Construction automatique sur GitHub
     machines de GitHub (workflow .github\workflows\windows.yml). L'installateur
     se télécharge dans l'onglet Actions (artefact « installateur »).
   - Publier une version : sur GitHub, onglet Releases, « Draft a new release »,
-    nouvelle étiquette vX.Y (par exemple v2.0) sur la branche main, puis
+    nouvelle étiquette vX.Y (par exemple v2.1) sur la branche main, puis
     « Publish release ». Le workflow construit l'installateur et le joint à la
-    Release. L'étiquette doit porter le même numéro que VERSION (commun.py)
-    et Version (installation\installateur.iss), sinon la construction s'arrête.
+    Release, avec son empreinte SHA-256 (fichier .sha256) : les programmes
+    installés ne proposent la nouvelle version qu'une fois ce fichier joint,
+    et vérifient le téléchargement avec lui. L'étiquette doit porter le même
+    numéro que VERSION (commun.py) et Version (installation\installateur.iss),
+    sinon la construction s'arrête.
   - Signature : la SignPath Foundation signe gratuitement les logiciels libres
     construits ainsi. La demande et la mise en place sont décrites dans
     installation\signpath\LISEZMOI_SIGNPATH.md. Tant que les variables
@@ -381,8 +389,19 @@ doit être lancée sur le système visé.
   - Menu Aide : la visite guidée, ce mode d'emploi (F1), le petit cours
     « Comprendre Sallen & Key » (F2), la liste des raccourcis clavier, les
     nouveautés de la version (affichées d'elles-mêmes une fois, au premier
-    lancement qui suit une mise à jour) et la version du programme
-    (À propos).
+    lancement qui suit une mise à jour), les mises à jour et la version du
+    programme (À propos).
+
+  - Mises à jour : au premier lancement, une carte en bas à droite demande
+    s'il faut vérifier, à chaque démarrage, si une nouvelle version est publiée
+    sur GitHub. Avec votre accord, le programme demande seulement le numéro de
+    la dernière version : rien d'autre n'est envoyé ; sans accord, il
+    n'utilise jamais Internet. Quand une version plus récente existe, la carte
+    propose « Installer » : le programme télécharge l'installateur, vérifie
+    qu'il est intact (empreinte SHA-256), se ferme en proposant d'enregistrer
+    le filtre, installe la nouvelle version et se rouvre ; préférences et
+    saisie sont gardées. Aide > Rechercher une mise à jour vérifie à la
+    demande ; Aide > Vérifier les mises à jour au démarrage change le choix.
 
   - Comprendre Sallen & Key (menu Aide ou F2, lien « Comment fonctionne cette
     cellule ? » de l'onglet Composants, lien de l'accueil) : un petit cours pour
@@ -466,8 +485,24 @@ doit être lancée sur le système visé.
     sensibles.
 
 
-6. NOUVEAUTÉS DE LA VERSION 2.0
+6. NOUVEAUTÉS DE LA VERSION 2.1
 -------------------------------
+
+  - Mises à jour : le programme peut vérifier à chaque démarrage si une
+    nouvelle version est publiée, puis l'installer d'un clic ; il se ferme et
+    se rouvre tout seul, préférences et saisie gardées. Il demande d'abord
+    votre accord, une seule fois (carte en bas à droite) ; Aide > Rechercher
+    une mise à jour vérifie à la demande.
+
+  - Confidentialité : sans votre accord, le programme n'utilise jamais
+    Internet ; avec, il demande seulement à GitHub le numéro de la dernière
+    version, et ne télécharge l'installateur que si vous le demandez.
+
+  - Propriétés des fichiers : le nom du produit et le numéro de version
+    figurent dans les propriétés de FiltresButterworth.exe et de
+    l'installateur (clic droit, Propriétés, onglet Détails).
+
+Rappel des nouveautés de la version 2.0 :
 
   - Logiciel neutre : les textes ne renvoient plus à un cours particulier ; les
     méthodes et les conventions de calcul sont expliquées dans le programme.

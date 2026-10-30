@@ -118,7 +118,7 @@ class VisiteGuidee:
         ("menu:Aide", "Aide",
          "Laissez la souris un instant sur un élément pour lire son explication. Le menu Aide contient "
          "le mode d'emploi (F1), un petit cours pour comprendre Sallen & Key (F2), les raccourcis "
-         "clavier, les nouveautés de la version et cette visite."),
+         "clavier, les nouveautés de la version, la recherche des mises à jour et cette visite."),
     ]
     MENUS = ["Fichier", "Affichage", "Aide"]        # ordre de la barre de menus
     TEINTE = (27, 42, 58)                            # UI["encre"] : couleur du voile
@@ -689,13 +689,15 @@ class AideMixin:
 
     def _menu_aide(self, barre: tk.Menu) -> None:
         """Menu Aide : visite guidée, mode d'emploi (F1), petit cours (F2), raccourcis, nouveautés,
-        à propos ; tout fonctionne sans Internet."""
+        mises à jour (mise_a_jour.py), à propos. Seules les mises à jour utilisent Internet."""
         aide = tk.Menu(barre, tearoff=False)
         aide.add_command(label="Visite guidée", command=self.lancer_visite)
         aide.add_command(label="Mode d'emploi", accelerator="F1", command=self.mode_emploi)
         aide.add_command(label="Comprendre Sallen & Key", accelerator="F2", command=self.ouvrir_guide)
         aide.add_command(label="Raccourcis clavier", command=self.raccourcis)
         aide.add_command(label=f"Nouveautés de la version {VERSION}", command=self.nouveautes)
+        aide.add_separator()
+        self._menu_mises_a_jour(aide)
         aide.add_separator()
         aide.add_command(label="À propos", command=self.a_propos)
         barre.add_cascade(label="Aide", menu=aide)

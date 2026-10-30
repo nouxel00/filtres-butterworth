@@ -149,9 +149,14 @@ jobs:
           name: installateur
           path: dist
 
-      - name: Installateur joint à la Release
+      # L'empreinte SHA-256 est jointe après l'installateur : le programme (Aide > Rechercher une
+      # mise à jour) ne propose une version que lorsque ce fichier existe, et vérifie le
+      # téléchargement avec lui.
+      - name: Installateur et son empreinte joints à la Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >-
-          gh release upload "${{ github.event.release.tag_name }}"
-          dist/Installer_FiltresButterworth_*.exe --clobber --repo "${{ github.repository }}"
+        run: |
+          cd dist
+          for f in Installer_FiltresButterworth_*.exe; do sha256sum "$f" > "$f.sha256"; done
+          gh release upload "${{ github.event.release.tag_name }}" Installer_FiltresButterworth_*.exe --clobber --repo "${{ github.repository }}"
+          gh release upload "${{ github.event.release.tag_name }}" Installer_FiltresButterworth_*.exe.sha256 --clobber --repo "${{ github.repository }}"

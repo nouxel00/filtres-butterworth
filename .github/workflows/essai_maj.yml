@@ -1,0 +1,127 @@
+# Essai temporaire (branche essai-maj, supprimée ensuite) : la 2.0 installée (vraie Release),
+# programme ouvert, se met à jour vers la 2.1 construite ici, avec le code de mise_a_jour.py et
+# un faux GitHub local ; installée pour soi seul ou pour tous.
+name: Essai mise à jour
+
+on:
+  push:
+    branches: [essai-maj]
+
+jobs:
+  bout_en_bout:
+    name: ${{ matrix.cas }}
+    runs-on: windows-latest
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        cas: [pour_soi, pour_tous]
+    env:
+      CAS: ${{ matrix.cas }}
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Bibliothèques
+        run: python -m pip install -r installation/requirements-construction.txt
+
+      - name: Construction de la 2.1
+        shell: pwsh
+        run: |
+          python installation/creer_icones.py
+          python -m PyInstaller --noconfirm --clean installation/FiltresButterworth.spec
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installation\installateur.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Installation de la 2.0, mise à jour, vérifications
+        shell: pwsh
+        run: |
+          $script:lignes = @(); $script:erreurs = @()
+          function Verifier([bool]$ok, [string]$quoi) {
+            $l = if ($ok) { "OK      $quoi" } else { "ÉCHEC   $quoi" }
+            Write-Host $l; $script:lignes += $l
+            if (-not $ok) { $script:erreurs += $quoi }
+          }
+          function Annoter([string]$titre, [string]$texte) {
+            $t = $texte -replace '%', '%25' -replace "`r", '' -replace "`n", '%0A'
+            Write-Host "::notice title=$titre::$t"
+          }
+          $cles = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
+                  "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*",
+                  "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*"
+          function Entrees { @(Get-ItemProperty $cles -ErrorAction SilentlyContinue | Where-Object DisplayName -eq "Filtres de Butterworth") }
+          try {
+            # 0. Propriétés des fichiers de la 2.1
+            $vi = (Get-Item dist\FiltresButterworth\FiltresButterworth.exe).VersionInfo
+            Verifier ($vi.ProductName -eq "Filtres de Butterworth" -and $vi.ProductVersion -eq "2.1" -and $vi.CompanyName -eq "Axel Sanou") "FiltresButterworth.exe : $($vi.ProductName) $($vi.ProductVersion), fichier $($vi.FileVersion), $($vi.CompanyName), $($vi.LegalCopyright)"
+            $installateur = (Resolve-Path dist\Installer_FiltresButterworth_2.1.exe).Path
+            $vii = (Get-Item $installateur).VersionInfo
+            Verifier ($vii.ProductName -eq "Filtres de Butterworth" -and $vii.ProductVersion -like "2.1*") "installateur : $($vii.ProductName) $($vii.ProductVersion), $($vii.CompanyName)"
+
+            # 1. La 2.0 de la vraie Release, installée pour soi seul ou pour tous
+            Invoke-WebRequest "https://github.com/nouxel00/filtres-butterworth/releases/download/v2.0/Installer_FiltresButterworth_2.0.exe" -OutFile "$env:RUNNER_TEMP\i20.exe"
+            $mode = if ($env:CAS -eq "pour_tous") { "/ALLUSERS" } else { "/CURRENTUSER" }
+            Start-Process "$env:RUNNER_TEMP\i20.exe" -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART $mode" -Wait
+            $e = Entrees
+            Verifier ($e.Count -eq 1 -and $e[0].DisplayVersion -eq "2.0") "2.0 installée ($mode) : $($e.InstallLocation)"
+            $dossier = $e[0].InstallLocation.TrimEnd('\')
+            $programme = Join-Path $dossier "FiltresButterworth.exe"
+
+            # 2. Préférences d'un utilisateur de la 2.0
+            $prefs = "$env:APPDATA\FiltresButterworth\preferences.json"
+            New-Item -ItemType Directory -Force (Split-Path $prefs) | Out-Null
+            '{"zoom": 1.15, "visite_vue": true, "version": "2.0", "mises_a_jour": false, "dossier": "C:/Essai"}' | Set-Content $prefs -Encoding utf8
+
+            # 3. Programme 2.0 ouvert ; mise à jour lancée comme depuis lui, puis il se ferme
+            $app20 = Start-Process $programme -PassThru
+            Start-Sleep 15
+            Verifier (-not $app20.HasExited) "programme 2.0 ouvert"
+            Start-Process python -ArgumentList "essais/faux_github.py 8765 2.1 `"$installateur`"" -RedirectStandardError "$env:RUNNER_TEMP\serveur.txt"
+            Start-Sleep 3
+            $sortie = python essais/mise_a_jour_windows.py http://127.0.0.1:8765/depot "$programme" $app20.Id 2>&1 | Out-String
+            Write-Host $sortie
+            Verifier ($LASTEXITCODE -eq 0) "mise à jour trouvée, téléchargée, vérifiée, installateur terminé"
+
+            # 4. Résultat
+            $e = Entrees
+            Verifier ($e.Count -eq 1 -and $e[0].DisplayVersion -eq "2.1" -and $e[0].InstallLocation.TrimEnd('\') -eq $dossier) "une seule installation, en 2.1, au même endroit ($($e.DisplayVersion -join ', '))"
+            Verifier ((Get-Item $programme).VersionInfo.ProductVersion -eq "2.1") "programme installé : version 2.1"
+            $rouvert = $null
+            for ($i = 0; $i -lt 60 -and -not $rouvert; $i++) {
+              Start-Sleep 1
+              $rouvert = Get-Process FiltresButterworth -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $programme } | Select-Object -First 1
+            }
+            Verifier ([bool]$rouvert) "programme rouvert par l'installateur"
+            $p = $null
+            for ($i = 0; $i -lt 90; $i++) {
+              Start-Sleep 1
+              try { $p = Get-Content $prefs -Raw | ConvertFrom-Json } catch { }
+              if ($p -and $p.version -eq "2.1") { break }
+            }
+            Verifier ($p.version -eq "2.1") "la 2.1 rouverte démarre vraiment (nouveautés notées dans les préférences)"
+            Verifier ($p.zoom -eq 1.15 -and $p.visite_vue -eq $true -and $p.dossier -eq "C:/Essai") "préférences gardées"
+            Start-Sleep 5
+            Verifier ($rouvert -and -not $rouvert.HasExited) "la 2.1 reste ouverte"
+            $journal = "$env:TEMP\FiltresButterworth.log"
+            $texteJournal = if (Test-Path $journal) { Get-Content $journal -Raw } else { "" }
+            Verifier (-not ($texteJournal -match "Traceback|Error|Erreur")) "journal du programme sans erreur"
+            $journalMaj = "$env:TEMP\FiltresButterworth_mise_a_jour.log"
+            $texteMaj = if (Test-Path $journalMaj) { Get-Content $journalMaj -Raw } else { "" }
+            Verifier ($texteMaj -match "Installation process succeeded") "journal de l'installation : réussie"
+            $ailleurs = if ($env:CAS -eq "pour_tous") { "$env:LOCALAPPDATA\Programs\Filtres de Butterworth" } else { "${env:ProgramFiles(x86)}\Filtres de Butterworth" }
+            Verifier (-not (Test-Path $ailleurs)) "pas de seconde copie ($ailleurs)"
+            if ($rouvert) { Stop-Process -Id $rouvert.Id -Force }
+            Annoter "Mise à jour ($env:CAS) : sortie" $sortie
+            Annoter "Journal de l'installation ($env:CAS)" ((($texteMaj -split "`n") | Select-Object -Last 25) -join "`n")
+            if ($texteJournal) { Annoter "Journal du programme ($env:CAS)" ((($texteJournal -split "`n") | Select-Object -Last 25) -join "`n") }
+          } catch {
+            Verifier $false "exception : $_"
+          }
+          Annoter "Vérifications ($env:CAS)" ($script:lignes -join "`n")
+          if ($script:erreurs.Count -gt 0) { exit 1 }
+          exit 0
