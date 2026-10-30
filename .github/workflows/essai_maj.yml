@@ -61,7 +61,8 @@ jobs:
             Verifier ($vi.ProductName -eq "Filtres de Butterworth" -and $vi.ProductVersion -eq "2.1" -and $vi.CompanyName -eq "Axel Sanou") "FiltresButterworth.exe : $($vi.ProductName) $($vi.ProductVersion), fichier $($vi.FileVersion), $($vi.CompanyName), $($vi.LegalCopyright)"
             $installateur = (Resolve-Path dist\Installer_FiltresButterworth_2.1.exe).Path
             $vii = (Get-Item $installateur).VersionInfo
-            Verifier ($vii.ProductName -eq "Filtres de Butterworth" -and $vii.ProductVersion -like "2.1*") "installateur : $($vii.ProductName) $($vii.ProductVersion), $($vii.CompanyName)"
+            # (Inno Setup complète ces textes par des espaces)
+            Verifier ($vii.ProductName.Trim() -eq "Filtres de Butterworth" -and $vii.ProductVersion.Trim() -eq "2.1" -and $vii.CompanyName.Trim() -eq "Axel Sanou") "installateur : $($vii.ProductName.Trim()) $($vii.ProductVersion.Trim()), $($vii.CompanyName.Trim())"
 
             # 1. La 2.0 de la vraie Release, installée pour soi seul ou pour tous
             Invoke-WebRequest "https://github.com/nouxel00/filtres-butterworth/releases/download/v2.0/Installer_FiltresButterworth_2.0.exe" -OutFile "$env:RUNNER_TEMP\i20.exe"
