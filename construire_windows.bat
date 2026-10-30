@@ -8,7 +8,7 @@ rem ===========================================================================
 rem  construire_windows.bat : construit le logiciel pour Windows.
 rem
 rem    dist\FiltresButterworth\FiltresButterworth.exe    programme autonome, avec son icône
-rem    dist\Installer_FiltresButterworth_2.0.exe         installateur (avec Inno Setup 7 ou 6)
+rem    dist\Installer_FiltresButterworth_2.1.exe         installateur (avec Inno Setup 7 ou 6)
 rem
 rem  À lancer par double-clic, depuis le dossier du programme décompressé, sur un
 rem  PC Windows avec Python 3.12, 3.13, 3.14 ou 3.15 (python.org). La première fois,

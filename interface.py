@@ -16,7 +16,7 @@ Fenêtre principale du programme (Tkinter).
     └───────────────┴───────────────────────────────────────────────────┘
 
 Les calculs sont faits par moteur.py et les dessins par graphes.py : l'interface
-ne s'occupe que de l'affichage et des interactions. Elle est répartie en cinq fichiers :
+ne s'occupe que de l'affichage et des interactions. Elle est répartie en six fichiers :
     interface.py  la fenêtre principale (classe Application) : elle assemble la saisie
                   et les résultats, lance le calcul, ouvre et enregistre les fichiers,
                   garde la séance, construit les menus Fichier et Affichage
@@ -26,6 +26,8 @@ ne s'occupe que de l'affichage et des interactions. Elle est répartie en cinq f
     panneaux.py   résultats : bandeau, onglets (Bode, étapes, composants, câblage), accueil
     aide.py       menu Aide : mode d'emploi, nouveautés, raccourcis, à propos, visite
                   guidée et fenêtre du cours « Comprendre Sallen & Key »
+    mise_a_jour.py  nouvelles versions : recherche (avec l'accord de l'utilisateur),
+                  téléchargement vérifié, installation ; carte et entrées du menu Aide
 """
 
 from __future__ import annotations
@@ -59,6 +61,7 @@ from panneaux import (
     Accueil, BarreOnglets, BULLES_ONGLETS, Fait, PanneauBode, PanneauCablage, PanneauComposants,
     PanneauEtapes)
 from aide import AideMixin, lire_lisezmoi, VisiteGuidee
+from mise_a_jour import MiseAJourMixin
 
 # Noms repris par main.py et par les programmes d'essai qui pilotent la fenêtre
 __all__ = ["Application", "lancer", "VERSION", "DEPOT", "UI", "lire_preferences", "enregistrer_preferences",
@@ -91,11 +94,15 @@ def lire_ajustements(liste, config) -> Tuple[Tuple[mt.Ajustement, ...], Optional
 # Fenêtre principale
 # =============================================================================
 
-class Application(AideMixin, tk.Tk):
-    """Fenêtre principale : saisie du gabarit à gauche, résultats à droite."""
+class Application(AideMixin, MiseAJourMixin, tk.Tk):
+    """Fenêtre principale : saisie du gabarit à gauche, résultats à droite.
+
+    annoncer_nouveautes et mises_a_jour (lancement réel, par lancer()) : nouveautés d'une
+    nouvelle version, une fois ; question puis vérification des mises à jour au démarrage."""
     ONGLETS = ["Bode normalisé", "Bode réel", "Étapes du calcul", "Composants", "Câblage"]
 
-    def __init__(self, fichier: Optional[str] = None, annoncer_nouveautes: bool = False):
+    def __init__(self, fichier: Optional[str] = None, annoncer_nouveautes: bool = False,
+                 mises_a_jour: bool = False):
         activer_haute_resolution()
         identifier_application()
         super().__init__()
@@ -114,6 +121,7 @@ class Application(AideMixin, tk.Tk):
         # Tant qu'aucun filtre n'est calculé, la zone des résultats montre l'accueil.
         self._accueil_actif = False
         self.visite: Optional[VisiteGuidee] = None   # visite guidée en cours
+        self._init_mises_a_jour()
 
         self._construire()
         self._menu()
@@ -122,7 +130,7 @@ class Application(AideMixin, tk.Tk):
         self.choisir_onglet(onglet)
         self._maj_titre()
         self.protocol("WM_DELETE_WINDOW", self.quitter)
-        self._premiers_pas(fichier, annoncer_nouveautes)
+        self._premiers_pas(fichier, annoncer_nouveautes, mises_a_jour)
 
     def _etat_initial(self) -> None:
         """Saisie, options et état du calcul d'une fenêtre neuve (avant la reprise de séance)."""
@@ -177,9 +185,10 @@ class Application(AideMixin, tk.Tk):
                     self._enregistre = session["enregistre"]
         return onglet
 
-    def _premiers_pas(self, fichier: Optional[str], annoncer_nouveautes: bool) -> None:
+    def _premiers_pas(self, fichier: Optional[str], annoncer_nouveautes: bool, mises_a_jour: bool = False) -> None:
         """Juste après l'ouverture : filtre à ouvrir ou séance à recalculer, puis visite guidée
-        (tout premier lancement) ou nouveautés (premier lancement d'une nouvelle version)."""
+        (tout premier lancement) ou nouveautés (premier lancement d'une nouvelle version), et
+        mises à jour (question posée une fois, ou vérification discrète si elle est acceptée)."""
         if fichier:                                  # double-clic sur un fichier .filtre
             self.after(80, lambda: self.ouvrir_filtre(fichier))
         elif self._saisie_complete():                # séance reprise : résultats recalculés
@@ -190,6 +199,8 @@ class Application(AideMixin, tk.Tk):
             self.after(700, self._visite_premier_lancement)    # une seule fois, fenêtre affichée
         elif annoncer_nouveautes and not fichier and self.preferences.get("version") != VERSION:
             self.after(700, self._nouveautes_mise_a_jour)      # nouvelle version : une seule fois
+        if mises_a_jour:
+            self.after(1500, self._mises_a_jour_au_demarrage)
 
     # ------------------------------------------------------------------ styles
     def _styles(self) -> None:
@@ -438,6 +449,7 @@ class Application(AideMixin, tk.Tk):
             self.calculer()                           # résultats (ou erreur) redessinés à la nouvelle taille
         else:
             self._vider_resultats()
+        self._reafficher_carte()                      # carte des mises à jour, à la nouvelle échelle
         if etape_visite is not None:
             self.after(250, lambda: self.lancer_visite(etape_visite))
 
@@ -1527,21 +1539,23 @@ class Application(AideMixin, tk.Tk):
             self._dialogue = None
 
     def _confirmer_abandon(self, action: str) -> bool:
-        """Avant de quitter, de commencer un nouveau filtre ou d'en ouvrir un autre : propose
-        d'enregistrer un filtre qui ne l'est pas ; pour quitter, demande toujours confirmation.
-        Renvoie True si l'action peut continuer."""
+        """Avant de quitter, de commencer un nouveau filtre, d'en ouvrir un autre ou d'installer
+        une mise à jour : propose d'enregistrer un filtre qui ne l'est pas ; pour quitter, demande
+        toujours confirmation. Renvoie True si l'action peut continuer."""
         if self._dialogue is not None:                 # une question est déjà posée
             return False
         if self.travail_non_enregistre():
             question = {"quitter": "Enregistrer le filtre avant de quitter ?",
                         "nouveau": "Enregistrer le filtre avant d'en commencer un nouveau ?",
-                        "ouvrir": "Enregistrer le filtre avant d'en ouvrir un autre ?"}[action]
+                        "ouvrir": "Enregistrer le filtre avant d'en ouvrir un autre ?",
+                        "mise_a_jour": "Enregistrer le filtre avant la mise à jour ?"}[action]
             if self.fichier and self._enregistre is not None:
                 explication = f"« {os.path.basename(self.fichier)} » a été modifié depuis son dernier enregistrement."
             else:
                 explication = "Ce filtre n'a pas encore été enregistré."
             explication += (" Sans enregistrement, seule la dernière saisie sera reprise au prochain lancement."
-                            if action == "quitter" else " Sans enregistrement, la saisie actuelle sera perdue.")
+                            if action in ("quitter", "mise_a_jour")
+                            else " Sans enregistrement, la saisie actuelle sera perdue.")
             reponse = self._demander("Filtre non enregistré", question, explication,
                                      [("enregistrer", "Enregistrer"), ("abandonner", "Ne pas enregistrer"),
                                       ("annuler", "Annuler")])
@@ -1693,7 +1707,7 @@ def lancer(fichier: Optional[str] = None, pret: Optional[Callable[[], None]] = N
 
     pret : appelé une fois la fenêtre affichée (programme installé : fermeture de l'écran de
     démarrage, qui reste visible pendant le chargement et le premier calcul)."""
-    app = Application(fichier, annoncer_nouveautes=True)
+    app = Application(fichier, annoncer_nouveautes=True, mises_a_jour=True)
     if pret is not None:
         etat = {"fait": False}
 

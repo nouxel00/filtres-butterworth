@@ -9,8 +9,33 @@
 # =============================================================================
 
 import os
+import re
+import sys
 
 RACINE = os.path.dirname(SPECPATH)            # SPECPATH : dossier de ce fichier (installation/)
+
+# Propriétés du fichier FiltresButterworth.exe (onglet Détails de l'Explorateur) : nom du produit
+# et numéro de version, celui du programme (commun.py) ; exigées pour la signature (SignPath).
+with open(os.path.join(RACINE, "commun.py"), encoding="utf-8") as fichier:
+    VERSION = re.search(r'^VERSION = "([^"]+)"', fichier.read(), re.M).group(1)
+INFOS_VERSION = None
+if sys.platform == "win32":
+    from PyInstaller.utils.win32.versioninfo import (FixedFileInfo, StringFileInfo, StringStruct, StringTable,
+                                                     VarFileInfo, VarStruct, VSVersionInfo)
+    NOMBRES = tuple(int(n) for n in VERSION.split(".")) + (0,) * (4 - len(VERSION.split(".")))
+    INFOS_VERSION = VSVersionInfo(
+        ffi=FixedFileInfo(filevers=NOMBRES, prodvers=NOMBRES, mask=0x3F, flags=0x0, OS=0x40004,
+                          fileType=0x1, subtype=0x0, date=(0, 0)),
+        kids=[StringFileInfo([StringTable("040C04B0", [
+                  StringStruct("CompanyName", "Axel Sanou"),
+                  StringStruct("FileDescription", "Filtres de Butterworth"),
+                  StringStruct("FileVersion", VERSION),
+                  StringStruct("InternalName", "FiltresButterworth"),
+                  StringStruct("LegalCopyright", "© 2026 Axel Sanou – licence MIT"),
+                  StringStruct("OriginalFilename", "FiltresButterworth.exe"),
+                  StringStruct("ProductName", "Filtres de Butterworth"),
+                  StringStruct("ProductVersion", VERSION)])]),
+              VarFileInfo([VarStruct("Translation", [0x040C, 1200])])])
 ICONE = os.path.join(RACINE, "icone.ico")
 
 a = Analysis(
@@ -52,6 +77,7 @@ exe = EXE(
     name="FiltresButterworth",
     console=False,          # programme fenêtré : pas de fenêtre noire de console
     icon=ICONE,             # icône du fichier .exe (Explorateur, raccourcis, barre des tâches)
+    version=INFOS_VERSION,  # nom du produit et numéro de version (Windows)
     upx=False,
 )
 

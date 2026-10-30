@@ -15,8 +15,12 @@ is in French. MIT license.*
 
 L'installateur Windows se trouve dans les
 [Releases](https://github.com/nouxel00/filtres-butterworth/releases/latest) :
-`Installer_FiltresButterworth_2.0.exe`. Il ne demande aucun droit administrateur. Le mode
+`Installer_FiltresButterworth_2.1.exe`. Il ne demande aucun droit administrateur. Le mode
 d'emploi est dans le programme (menu Aide, F1) et dans `LISEZMOI.txt`.
+
+Les versions suivantes s'installent ensuite depuis le programme, avec l'accord de
+l'utilisateur : il vérifie au démarrage si une nouvelle version est publiée ici et l'installe
+d'un clic (menu Aide > Rechercher une mise à jour).
 
 Tant que le programme n'est pas signé, Windows peut afficher « Windows a protégé votre
 ordinateur » : cliquer sur « Informations complémentaires », puis sur « Exécuter quand même ».
@@ -89,13 +93,24 @@ demande expresse de son utilisateur. *This program will not transfer any informa
 other networked systems unless specifically requested by the user or the person installing
 or operating it.*
 
-Il n'utilise pas Internet : ni télémétrie, ni mise à jour automatique. Il enregistre
-seulement, sur l'ordinateur :
+Il n'utilise Internet que pour les mises à jour, et seulement si l'utilisateur l'a accepté
+(question posée au premier lancement, modifiable dans le menu Aide) ou le demande (Aide >
+Rechercher une mise à jour). Il demande alors à GitHub le numéro de la dernière version
+publiée dans ce dépôt ; si l'utilisateur clique sur « Installer », il télécharge
+l'installateur depuis les Releases de ce dépôt. Aucun identifiant ni aucune donnée de
+l'utilisateur n'est envoyé : ni télémétrie, ni statistiques. Comme pour toute page web,
+GitHub voit l'adresse IP de l'ordinateur (voir la
+[politique de confidentialité de GitHub](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement)).
+
+Il enregistre seulement, sur l'ordinateur :
 
 - les préférences et la dernière saisie, dans `%APPDATA%\FiltresButterworth` ;
 - la liste des polices préparée pour les graphiques, dans
   `%LOCALAPPDATA%\FiltresButterworth\matplotlib` (effacée à la désinstallation) ;
 - les fichiers que l'utilisateur enregistre lui-même (filtres, PDF, images, netlists) ;
+- pendant une mise à jour, l'installateur téléchargé dans `%TEMP%\FiltresButterworth`
+  (effacé au lancement suivant) et le journal de l'installation,
+  `%TEMP%\FiltresButterworth_mise_a_jour.log` ;
 - en cas d'erreur, un journal dans `%TEMP%\FiltresButterworth.log`.
 
 ## Licence

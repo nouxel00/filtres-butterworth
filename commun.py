@@ -51,7 +51,7 @@ UI = {
 
 
 # Version du programme (à reporter dans installation/installateur.iss)
-VERSION = "2.0"
+VERSION = "2.1"
 
 
 DEPOT = "https://github.com/nouxel00/filtres-butterworth"   # code source (licence MIT)
